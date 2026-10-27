@@ -33,7 +33,7 @@ import { waveFor } from '@creature/shared';
 import { BRAND_KIT, CHARACTERS, VOICES, WRITING_TEMPLATES, timeAgo } from '../lib/mock';
 import { AI_TEXT_LABEL, estimateCredits, modelByCode, modelsFor, stripAiTextLabel, type TransformKind } from '@creature/shared';
 import { navigate } from '../lib/router';
-import { uid, useStore } from '../lib/store';
+import { uid, useStore, type Handoff } from '../lib/store';
 import type { Asset, Modality, ModelInfo, Output, RoutingStrategy, Task } from '../lib/types';
 
 const MODE_TABS: { value: Modality; label: string; icon: typeof ImageIcon }[] = [
@@ -97,7 +97,7 @@ function History({ mode }: { mode: Modality }) {
 }
 
 /** 读取首页 / 模板带过来的预填内容 */
-function useHandoff(mode: Modality, apply: (prompt: string, autostart: boolean, firstFrame?: Asset) => void) {
+function useHandoff(mode: Modality, apply: (prompt: string, autostart: boolean, firstFrame: Asset | undefined, h: Handoff) => void) {
   const { state, setHandoff } = useStore();
   const applied = useRef(false);
   useEffect(() => {
@@ -105,7 +105,7 @@ function useHandoff(mode: Modality, apply: (prompt: string, autostart: boolean, 
     if (applied.current || !h || h.to !== 'studio' || (h.mode ?? 'image') !== mode) return;
     applied.current = true;
     setHandoff(null);
-    apply(h.prompt ?? '', !!h.autostart, h.firstFrame);
+    apply(h.prompt ?? '', !!h.autostart, h.firstFrame, h);
   }, [state.handoff, mode, setHandoff, apply]);
 }
 
@@ -159,7 +159,7 @@ function assetFromOutput(o: Output, t: Task): Asset {
 }
 
 function TaskCard({ task, onVariant }: { task: Task; onVariant?: (t: Task) => void }) {
-  const { state, openViewer, patchAsset, toast, setHandoff, submit, cancelTask } = useStore();
+  const { state, openViewer, patchAsset, toast, setHandoff, submit, cancelTask, downloadAsset } = useStore();
   const n = Math.min(task.count, 4);
   const paramText =
     task.modality === 'image'
@@ -241,7 +241,7 @@ function TaskCard({ task, onVariant }: { task: Task; onVariant?: (t: Task) => vo
               <div className="result" key={o.id}>
                 <Art prompt={o.prompt} ratio={o.ratio} variant={o.variant} kind={o.kind} durationSec={o.durationSec} url={o.url} controls={o.kind === 'video'} onClick={() => openViewer(asset)} label={`查看第 ${o.variant + 1} 个结果`} />
                 <div className="result-actions">
-                  <button aria-label="下载" title="下载（带 AI 标识）" onClick={() => toast('已开始下载 · 文件含显式与隐式 AI 标识（原型演示）', 'info')}>
+                  <button aria-label="下载" title="下载（带 AI 标识）" onClick={() => void downloadAsset(asset)}>
                     <Download size={15} />
                   </button>
                   <button aria-label="收藏" title="收藏" onClick={() => (patchAsset(asset.id, { favorite: !asset.favorite }), toast(asset.favorite ? '已取消收藏' : '已收藏到资产库'))}>
@@ -406,8 +406,14 @@ function ImageStudio() {
   };
   const uploading = refs.some((r) => !r.asset);
 
-  useHandoff('image', (p, auto) => {
+  useHandoff('image', (p, auto, _ff, h) => {
     setPrompt(p);
+    // 做同款：沿用原作的比例、分辨率、数量与模型
+    const hp = h.params ?? {};
+    if (typeof hp.ratio === 'string' && ['1:1', '3:4', '4:3', '9:16', '16:9'].includes(hp.ratio)) setRatio(hp.ratio);
+    if (typeof hp.resolution === 'string' && ['1k', '2k', '4k'].includes(hp.resolution)) setResolution(hp.resolution);
+    if (typeof hp.count === 'number') setCount(Math.min(4, Math.max(1, hp.count)));
+    if (h.modelCode && modelsFor('image').some((m) => m.code === h.modelCode)) setPinned(h.modelCode);
     if (auto && p) window.setTimeout(() => go(p), 50);
   });
 
@@ -602,8 +608,17 @@ function VideoStudio() {
     submit({ modality: 'video', prompt: `${p.trim()}${camera !== '固定' ? `（运镜：${camera}）` : ''}`, model: m, params: paramsFor(m), count: 1, references });
   };
 
-  useHandoff('video', (p, auto, ff) => {
+  useHandoff('video', (raw, auto, ff, h) => {
+    // 提交时会按运镜设置追加说明，做同款带来的提示词先去掉旧的
+    const p = raw.replace(/（运镜：[^）]*）$/, '');
     setPrompt(p);
+    const hp = h.params ?? {};
+    if (typeof hp.ratio === 'string' && ['9:16', '16:9', '1:1', '4:3'].includes(hp.ratio)) setRatio(hp.ratio);
+    if (typeof hp.duration === 'number') setDuration(hp.duration);
+    if (typeof hp.resolution === 'string' && ['720p', '1080p'].includes(hp.resolution)) setResolution(hp.resolution);
+    if (typeof hp.audio === 'boolean') setAudio(hp.audio);
+    if (typeof hp.camera === 'string' && CAMERA.includes(hp.camera)) setCamera(hp.camera);
+    if (h.modelCode && modelsFor('video').some((m) => m.code === h.modelCode)) setPinned(h.modelCode);
     if (ff) {
       setFrame(ff);
       setWay('i2v');

@@ -51,12 +51,20 @@ export interface Asset {
   model: string;
   durationSec?: number;
   favorite?: boolean;
+  /** 所在文件夹 ID */
   folder?: string;
   text?: string;
   url?: string;
   contentId?: string;
   /** uploaded：用户上传（不带 AI 标识） */
   source?: 'generated' | 'uploaded';
+}
+
+export interface Folder {
+  id: string;
+  name: string;
+  /** 接入后端时为服务端统计的作品数（含尚未加载到本地的作品） */
+  count?: number;
 }
 
 export interface LedgerEntry {

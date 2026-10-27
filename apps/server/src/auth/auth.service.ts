@@ -89,6 +89,7 @@ export class AuthService {
     if (!consumed.length) throw new AppError('CODE_INVALID', 400, '验证码已使用，请重新获取');
 
     const { userId, isNew } = await this.findOrCreateUser(phone, ph);
+    if (this.config.adminPhones.includes(phone)) await this.db.query(`UPDATE users SET role = 'admin' WHERE id = $1 AND role <> 'admin'`, [userId]);
     // PRD：每日首次登录赠送积分（同一天内幂等）
     await this.credits.ensureDailyGrant(userId);
     const tokens = await this.issue(userId, newId('fam'), userAgent);

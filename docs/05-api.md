@@ -46,25 +46,28 @@
 | 429 | `RATE_LIMITED` | 请求过于频繁 |
 | 503 | `MODEL_UNAVAILABLE` | 所选模型及备选模型均不可用 |
 
-### 1.3 实现状态（Sprint 1–2）
+### 1.3 实现状态（Sprint 1–3）
 
 已实现（`apps/server`，带集成测试）：
 
 | 分组 | 接口 |
 |---|---|
 | 认证 | `POST /auth/sms/send`、`POST /auth/sms/login`、`POST /auth/refresh`、`POST /auth/logout` |
-| 用户 | `GET /me`、`PATCH /me` |
+| 用户 | `GET /me`（含 `role`）、`PATCH /me` |
 | 模型 | `GET /models`、`POST /models/route` |
 | 生成 | `POST /generations`、`GET /generations`、`GET /generations/{id}`、`POST /generations/{id}/cancel` |
 | 推送 | `GET /events`（SSE，替代 3.3 节的 WebSocket，见下） |
-| 资产 | `GET /assets`、`GET /assets/{id}`、`PATCH /assets/{id}`、`DELETE /assets/{id}`、`GET /files/{token}`（签名文件） |
+| 资产 | `GET /assets?kind=&favorite=&q=&folder=`（`folder=none` 为未归档）、`GET /assets/{id}`、`PATCH /assets/{id}`、`DELETE /assets/{id}`（同时撤回广场发布）、`POST /assets/move`、`GET /assets/{id}/download`、`GET /files/{token}`（签名文件；带 `dl` 参数时以附件下载） |
+| 文件夹 | `GET /asset-folders`（含作品数）、`POST /asset-folders`、`PATCH /asset-folders/{id}`、`DELETE /asset-folders/{id}`（作品移回未归档） |
 | 上传 | `POST /assets/uploads`、`PUT /uploads/{id}?exp=&sig=`（签名地址，无需登录态）、`POST /assets/uploads/{id}/complete`，见 3.7 |
 | 项目与画布 | `GET /projects`、`POST /projects`（同时创建画布）、`PATCH /projects/{id}`、`DELETE /projects/{id}`、`GET /canvases/latest`、`GET /canvases/{id}`、`PUT /canvases/{id}`，见 3.8 |
+| 社区 | `GET /feed?tab=recommend\|latest\|hot\|mine&kind=&cursor=`、`POST /posts`、`GET /posts/{id}`、`DELETE /posts/{id}`（作者撤回）、`PUT` / `DELETE /posts/{id}/like`、`POST /posts/{id}/remix`、`POST /reports`，见 3.9 |
+| 管理后台 | `GET /admin/overview`、`GET /admin/models`、`GET /admin/review-queue`、`POST /admin/posts/{id}/decision`（需 `role = admin`），见 3.10 |
 | 积分 | `GET /credits/balance`、`GET /credits/ledger` |
 | 订单 | `POST /orders`、`GET /orders/{id}`、`POST /orders/{id}/mock-pay`（仅 `PAYMENTS_MODE=mock`） |
 | 运维 | `GET /healthz` |
 
-其余接口（写作流式、画布运行与分享、Agent、模板、社区、团队、支付回调、开放 API）按 [开发计划](./07-roadmap.md) 在后续 Sprint 实现。刷新令牌通过 httpOnly Cookie `crt_rt`（路径 `/v1/auth`）下发，前端不接触。
+其余接口（写作流式、画布运行与分享、Agent、模板、评论与关注流、团队、支付回调、开放 API）按 [开发计划](./07-roadmap.md) 在后续 Sprint 实现。刷新令牌通过 httpOnly Cookie `crt_rt`（路径 `/v1/auth`）下发，前端不接触。
 
 ## 2. 接口清单
 
@@ -167,10 +170,10 @@
 
 | 方法 | 路径 | 说明 |
 |---|---|---|
-| GET | `/feed?tab=recommend\|latest\|following&type=` | 灵感广场 |
+| GET | `/feed?tab=recommend\|latest\|hot\|mine\|following&kind=` | 灵感广场（`following` 待做） |
 | POST | `/posts` | 发布作品到广场 |
 | GET | `/posts/{id}` | 作品详情 |
-| POST | `/posts/{id}/reactions` | 点赞 / 收藏 |
+| PUT / DELETE | `/posts/{id}/like` | 点赞 / 取消点赞（幂等） |
 | POST | `/posts/{id}/remix` | 做同款（返回预填参数） |
 | CRUD | `/posts/{id}/comments` | 评论 |
 | POST | `/reports` | 举报 |
@@ -425,6 +428,22 @@ data: {"session_status":"awaiting_confirm"}
 - 成功返回 `{ "version": 8, "updated_at": "…" }`；`version` 与服务端不一致返回 `409 CANVAS_VERSION_CONFLICT`（`details.current_version`），客户端应重新读取后再保存。
 - 节点的 `outputs` 等未知字段不会保存；`GET` 时服务端按 `taskId` 补全最新状态与签名产物地址。修改过、尚未重跑的节点可带 `prevTaskId`，读取时继续展示上一次的产物。
 - 文档上限 1 MB、500 个节点、2000 条连线、300 条对话；重复节点 ID、连线指向不存在的节点返回 `400`。
+
+### 3.9 灵感广场
+
+- **发布** `POST /v1/posts` `{ "asset_id": "ast_…", "title": "秋天的第一杯", "tags": ["咖啡"], "show_prompt": true }`：只能发布自己的 AI 生成图像 / 视频（上传素材 `400`）；同一作品重复发布返回已有那条；每人每天 20 条。发布时快照提示词、模型与参数。机审命中拦截词返回 `422 CONTENT_REJECTED`，命中复核词（公众人物、功效宣传等）`status = "reviewing"`，只有作者可见，人工通过后进入广场。
+- **列表** `GET /v1/feed`：`recommend` 按互动数与发布时长衰减排序，`latest` 按发布时间，`hot` 按点赞数，`mine` 为自己的全部发布（含审核中、已隐藏）。`cursor` 为上一页返回的 `next_cursor`。作者关闭 `show_prompt` 时他人看到的 `prompt` 为 `null`。
+- **做同款** `POST /v1/posts/{id}/remix` 返回 `{ modality, prompt, params, model_code }`（提示词未公开时为空字符串），每人只计一次，作者自己不计。
+- **举报** `POST /v1/reports` `{ "target_type": "post", "target_id": "pst_…", "reason": "infringement", "detail": "…" }`，`reason` 为 `porn / violence / politics / infringement / ad / other`。只能举报广场上可见的他人作品；同一人对同一作品只记一次；累计 3 人举报自动隐藏，进入后台复核；每人每天 20 次。
+
+### 3.10 管理后台
+
+`ADMIN_PHONES` 中的手机号登录时授予 `role = admin`；每次请求都会重新校验角色。
+
+- `GET /v1/admin/overview`：今日任务数与成功率、今日收入、今日消耗积分、队列长度、待复核数、近 14 天每日任务（按北京时间）。
+- `GET /v1/admin/models`：每个模型的网关 5 分钟窗口（样本数、成功率、是否熔断）与近 24 小时任务数、成功率、P95 耗时。
+- `GET /v1/admin/review-queue`：审核中、被举报隐藏或有未处理举报的作品，附机审标签与举报原因统计；审核员可看到未公开的提示词。
+- `POST /v1/admin/posts/{id}/decision` `{ "action": "approve" | "remove", "note": "…" }`：通过时发布并驳回举报（举报计数清零），下架时隐藏并将举报标记为成立；每次处理写一条人工审核记录与审计日志。
 
 ## 4. 开放 API（P2）
 

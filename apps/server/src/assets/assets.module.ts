@@ -7,13 +7,17 @@ import { pageParams, parse, UserId } from '../common/http';
 import { SafetyModule } from '../safety/safety.module';
 import { StorageService } from '../storage/storage.service';
 import { AssetsService } from './assets.service';
+import { FoldersService } from './folders.service';
 import { MAX_UPLOAD_BYTES, UPLOAD_MIMES, UploadsService } from './uploads.service';
 
 const ListQuery = z.object({
   kind: z.enum(['image', 'video', 'text', 'audio']).optional(),
   favorite: z.enum(['true', 'false']).optional(),
   q: z.string().max(100).optional(),
+  folder: z.string().max(64).optional(),
 });
+const FolderName = z.object({ name: z.string().trim().min(1, '请输入文件夹名称').max(20) }).strict();
+const MoveBody = z.object({ ids: z.array(z.string().max(64)).min(1).max(100), folder_id: z.string().max(64).nullable() }).strict();
 const PatchBody = z.object({ favorite: z.boolean().optional(), title: z.string().trim().min(1).max(60).optional() }).strict();
 const UploadBody = z.object({
   filename: z.string().trim().min(1).max(120),
@@ -56,8 +60,21 @@ export class AssetsController {
 
   @Get()
   list(@UserId() userId: string, @Query() query: Record<string, unknown>) {
-    const f = parse(ListQuery, { kind: query.kind, favorite: query.favorite, q: query.q });
-    return this.assets.list(userId, { kind: f.kind, favorite: f.favorite ? f.favorite === 'true' : undefined, q: f.q, ...pageParams(query) });
+    const f = parse(ListQuery, { kind: query.kind, favorite: query.favorite, q: query.q, folder: query.folder });
+    return this.assets.list(userId, { kind: f.kind, favorite: f.favorite ? f.favorite === 'true' : undefined, q: f.q, folder: f.folder, ...pageParams(query) });
+  }
+
+  /** 批量移动到文件夹；folder_id 为 null 时移出文件夹 */
+  @Post('move')
+  @HttpCode(200)
+  async move(@UserId() userId: string, @Body() body: unknown) {
+    const b = parse(MoveBody, body);
+    return { moved: await this.assets.move(userId, b.ids, b.folder_id) };
+  }
+
+  @Get(':id/download')
+  download(@UserId() userId: string, @Param('id') id: string) {
+    return this.assets.download(userId, id);
   }
 
   @Get(':id')
@@ -77,15 +94,47 @@ export class AssetsController {
   }
 }
 
-/** 签名文件访问：校验签名与有效期后输出文件 */
+@Controller('asset-folders')
+@UseGuards(AuthGuard)
+export class FoldersController {
+  constructor(private readonly folders: FoldersService) {}
+
+  @Get()
+  list(@UserId() userId: string) {
+    return this.folders.list(userId);
+  }
+
+  @Post()
+  create(@UserId() userId: string, @Body() body: unknown) {
+    return this.folders.create(userId, parse(FolderName, body).name);
+  }
+
+  @Patch(':id')
+  @HttpCode(204)
+  rename(@UserId() userId: string, @Param('id') id: string, @Body() body: unknown) {
+    return this.folders.rename(userId, id, parse(FolderName, body).name);
+  }
+
+  @Delete(':id')
+  @HttpCode(204)
+  remove(@UserId() userId: string, @Param('id') id: string) {
+    return this.folders.remove(userId, id);
+  }
+}
+
+/** 签名文件访问：校验签名与有效期后输出文件；带 dl 参数时以附件形式下载 */
 @Controller('files')
 export class FilesController {
   constructor(private readonly storage: StorageService) {}
 
   @Get(':token')
-  serve(@Param('token') token: string, @Query('exp') exp: string, @Query('sig') sig: string, @Res() res: Response) {
-    const file = this.storage.open(token, exp, sig);
+  serve(@Param('token') token: string, @Query('exp') exp: string, @Query('sig') sig: string, @Query('dl') dl: string | undefined, @Res() res: Response) {
+    const file = this.storage.open(token, exp, sig, typeof dl === 'string' ? dl : undefined);
     if (!file) throw Errors.notFound('文件');
+    if (file.filename) {
+      const ascii = file.filename.replace(/[^\x20-\x7e]/g, '_').replace(/["\\]/g, '_');
+      res.setHeader('Content-Disposition', `attachment; filename="${ascii}"; filename*=UTF-8''${encodeURIComponent(file.filename)}`);
+    }
     res.setHeader('Content-Type', file.mime);
     res.setHeader('Cache-Control', `private, max-age=${Math.max(0, file.maxAge)}`);
     res.setHeader('X-Content-Type-Options', 'nosniff');
@@ -97,8 +146,8 @@ export class FilesController {
 
 @Module({
   imports: [SafetyModule],
-  controllers: [UploadsController, AssetsController, FilesController],
-  providers: [AssetsService, UploadsService],
+  controllers: [UploadsController, AssetsController, FoldersController, FilesController],
+  providers: [AssetsService, UploadsService, FoldersService],
   exports: [AssetsService],
 })
 export class AssetsModule {}

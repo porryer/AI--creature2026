@@ -64,6 +64,12 @@ export class ModelGateway {
     return pool.filter((m) => this.adapterFor(m) && !this.isOpen(m.code));
   }
 
+  /** 是否已配置供应商适配器（不考虑熔断） */
+  configured(code: string): boolean {
+    const m = findModel(code);
+    return !!m && !!this.adapterFor(m);
+  }
+
   /** 校验用户手动指定的模型 */
   resolvePinned(code: string, modality: Modality): ModelInfo | null {
     const m = findModel(code);

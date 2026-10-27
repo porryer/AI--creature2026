@@ -1,8 +1,8 @@
 import { Inject, Injectable } from '@nestjs/common';
-import type { AssetDTO, Modality, OutputDTO } from '@creature/shared';
+import type { AssetDTO, DownloadDTO, Modality, OutputDTO } from '@creature/shared';
 import { Errors } from '../common/errors';
 import { Db, DB } from '../db/db';
-import { StorageService } from '../storage/storage.service';
+import { extFor, StorageService } from '../storage/storage.service';
 
 export interface AssetRow {
   id: string;
@@ -22,6 +22,7 @@ export interface AssetRow {
   content_id: string;
   favorite: boolean;
   source: 'generated' | 'uploaded';
+  folder_id: string | null;
   created_at: Date;
 }
 
@@ -49,6 +50,7 @@ export class AssetsService {
       model: r.model_name,
       task_id: r.task_id,
       source: r.source,
+      folder_id: r.folder_id,
       created_at: new Date(r.created_at).toISOString(),
     };
   }
@@ -66,15 +68,17 @@ export class AssetsService {
     return map;
   }
 
-  async list(userId: string, f: { kind?: Modality; favorite?: boolean; q?: string; cursor: string | null; limit: number }) {
+  /** folder：文件夹 ID；'none' 表示未归入文件夹 */
+  async list(userId: string, f: { kind?: Modality; favorite?: boolean; q?: string; folder?: string; cursor: string | null; limit: number }) {
     const rows = await this.db.query<AssetRow>(
       `SELECT * FROM assets WHERE user_id = $1 AND deleted_at IS NULL
          AND ($2::text IS NULL OR kind = $2)
          AND ($3::boolean IS NULL OR favorite = $3)
          AND ($4::text IS NULL OR title ILIKE '%' || $4 || '%' OR prompt ILIKE '%' || $4 || '%')
          AND ($5::text IS NULL OR id < $5)
+         AND ($7::text IS NULL OR ($7 = 'none' AND folder_id IS NULL) OR folder_id = $7)
        ORDER BY id DESC LIMIT $6`,
-      [userId, f.kind ?? null, f.favorite ?? null, f.q?.trim() || null, f.cursor, f.limit + 1],
+      [userId, f.kind ?? null, f.favorite ?? null, f.q?.trim() || null, f.cursor, f.limit + 1, f.folder ?? null],
     );
     const page = rows.slice(0, f.limit);
     return { data: page.map((r) => this.toDTO(r)), next_cursor: rows.length > f.limit ? page[page.length - 1].id : null };
@@ -93,9 +97,31 @@ export class AssetsService {
     return this.toDTO(r);
   }
 
+  /** 删除作品；已发布到广场的同时撤回 */
   async remove(userId: string, id: string): Promise<void> {
     await this.row(userId, id);
-    await this.db.query('UPDATE assets SET deleted_at = now() WHERE id = $1 AND user_id = $2', [id, userId]);
+    await this.db.tx(async (q) => {
+      await q.query('UPDATE assets SET deleted_at = now() WHERE id = $1 AND user_id = $2', [id, userId]);
+      await q.query(`UPDATE posts SET status = 'removed' WHERE asset_id = $1 AND status <> 'removed'`, [id]);
+    });
+  }
+
+  /** 批量移动到文件夹（folderId 为 null 时移出文件夹），返回实际移动的数量 */
+  async move(userId: string, ids: string[], folderId: string | null): Promise<number> {
+    if (folderId) {
+      const [f] = await this.db.query('SELECT id FROM asset_folders WHERE id = $1 AND user_id = $2 AND deleted_at IS NULL', [folderId, userId]);
+      if (!f) throw Errors.notFound('文件夹');
+    }
+    const r = await this.db.query('UPDATE assets SET folder_id = $3 WHERE id = ANY($1::text[]) AND user_id = $2 AND deleted_at IS NULL RETURNING id', [ids, userId, folderId]);
+    return r.length;
+  }
+
+  /** 下载：返回 10 分钟有效的附件地址；生成作品下载的是带显式与隐式标识的交付文件 */
+  async download(userId: string, id: string): Promise<DownloadDTO> {
+    const r = await this.row(userId, id);
+    const base = r.title.replace(/[\\/:*?"<>|\u0000-\u001f]+/g, ' ').trim().slice(0, 60) || r.content_id;
+    const filename = `${base}.${extFor(r.mime_type)}`;
+    return { url: this.storage.signedDownloadUrl(r.storage_key, filename), filename };
   }
 
   private async row(userId: string, id: string): Promise<AssetRow> {

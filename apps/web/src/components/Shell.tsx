@@ -46,10 +46,12 @@ export function NavRail({ route }: { route: Route }) {
         <Crown size={20} strokeWidth={1.75} />
         会员
       </button>
-      <button className="rail-item" aria-current={route.name === 'admin' ? 'page' : undefined} onClick={() => navigate('admin')}>
-        <Shield size={20} strokeWidth={1.75} />
-        后台
-      </button>
+      {state.profile?.role === 'admin' && (
+        <button className="rail-item" aria-current={route.name === 'admin' ? 'page' : undefined} onClick={() => navigate('admin')}>
+          <Shield size={20} strokeWidth={1.75} />
+          后台
+        </button>
+      )}
       <button className="rail-item" title={`主题：${themeLabel[state.theme]}`} aria-label={`切换主题，当前${themeLabel[state.theme]}`} onClick={() => setTheme(nextTheme[state.theme])}>
         <ThemeIcon size={20} strokeWidth={1.75} />
         {themeLabel[state.theme]}

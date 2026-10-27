@@ -2199,6 +2199,63 @@ table.board tr:last-child td {
 .bulkbar .btn:hover {
   background: rgba(127, 127, 127, 0.2);
 }
+.publish-form {
+  display: grid;
+  gap: 12px;
+  padding: 14px;
+  margin-top: 12px;
+}
+.report-reasons {
+  border: 0;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 6px 12px;
+  font-size: 13px;
+}
+.report-reasons legend {
+  margin-bottom: 6px;
+}
+.report-reasons label {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.move-menu {
+  top: calc(100% + 6px);
+  right: 8px;
+  width: 240px;
+  color: var(--fg);
+}
+.move-menu .popover-list button {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 9px 14px;
+  border: 0;
+  background: none;
+  color: inherit;
+  font: inherit;
+  font-size: 13px;
+  text-align: left;
+}
+.move-menu .popover-list button:hover:not(:disabled) {
+  background: var(--hover);
+}
+.move-menu .popover-list button:disabled {
+  color: var(--fg-3);
+}
+.folder-name {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.folder-name .input {
+  height: 32px;
+  min-width: 0;
+}
 .char-grid,
 .card-grid {
   display: grid;

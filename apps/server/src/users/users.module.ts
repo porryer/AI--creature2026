@@ -18,6 +18,7 @@ interface UserRow {
   phone_enc: string;
   plan_code: PlanCode;
   plan_expires_at: Date | null;
+  role: 'user' | 'admin';
 }
 
 @Controller('me')
@@ -44,7 +45,7 @@ export class MeController {
   }
 
   private async dto(userId: string): Promise<MeDTO> {
-    const [u] = await this.db.query<UserRow>('SELECT id, nickname, phone_enc, plan_code, plan_expires_at FROM users WHERE id = $1', [userId]);
+    const [u] = await this.db.query<UserRow>('SELECT id, nickname, phone_enc, plan_code, plan_expires_at, role FROM users WHERE id = $1', [userId]);
     if (!u) throw Errors.unauthenticated();
     const plan = PLANS[u.plan_code] ?? PLANS.free;
     return {
@@ -53,6 +54,7 @@ export class MeController {
       phone_masked: maskPhone(decryptPhone(u.phone_enc, this.config.phoneEncKey)),
       plan: { code: plan.code, name: plan.name, expires_at: u.plan_expires_at ? new Date(u.plan_expires_at).toISOString() : null },
       credits: await this.credits.balanceForUser(userId),
+      role: u.role,
     };
   }
 }

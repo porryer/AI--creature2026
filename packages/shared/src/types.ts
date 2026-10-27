@@ -95,7 +95,20 @@ export interface AssetDTO {
   task_id: string | null;
   /** generated：AI 生成（带 AI 标识）；uploaded：用户上传（不加标识） */
   source: 'generated' | 'uploaded';
+  folder_id?: string | null;
   created_at: string;
+}
+
+export interface FolderDTO {
+  id: string;
+  name: string;
+  asset_count: number;
+  created_at: string;
+}
+
+export interface DownloadDTO {
+  url: string;
+  filename: string;
 }
 
 export type ReferenceRole = 'style' | 'subject' | 'character' | 'first_frame' | 'last_frame';
@@ -139,6 +152,8 @@ export interface MeDTO {
   phone_masked: string;
   plan: { code: string; name: string; expires_at: string | null };
   credits: BalanceDTO;
+  /** admin 可进入管理后台 */
+  role: 'user' | 'admin';
 }
 
 export interface OrderDTO {
@@ -194,6 +209,90 @@ export interface ProjectDTO {
   created_at: string;
   updated_at: string;
   canvases: { id: string; name: string; node_count: number; updated_at: string }[];
+}
+
+// ---------- 灵感广场 ----------
+
+export type FeedTab = 'recommend' | 'latest' | 'hot' | 'mine';
+export type PostStatus = 'reviewing' | 'published' | 'hidden' | 'removed';
+export type ReportReason = 'porn' | 'violence' | 'politics' | 'infringement' | 'ad' | 'other';
+
+export const REPORT_REASONS: Record<ReportReason, string> = {
+  porn: '色情低俗',
+  violence: '暴力血腥',
+  politics: '政治敏感',
+  infringement: '侵权（肖像 / 版权 / 商标）',
+  ad: '广告引流',
+  other: '其他',
+};
+
+export interface PostDTO {
+  id: string;
+  kind: 'image' | 'video';
+  title: string;
+  /** 作者选择不公开提示词时为 null（作者本人仍可见） */
+  prompt: string | null;
+  tags: string[];
+  author: { id: string; nickname: string };
+  model: string;
+  url: string;
+  width?: number;
+  height?: number;
+  duration_sec?: number;
+  content_id: string;
+  like_count: number;
+  remix_count: number;
+  liked: boolean;
+  mine: boolean;
+  status: PostStatus;
+  published_at: string | null;
+  created_at: string;
+}
+
+/** 做同款：预填到创作工作台的内容 */
+export interface RemixDTO {
+  modality: 'image' | 'video';
+  prompt: string;
+  params: GenerationParams;
+  model_code: string | null;
+}
+
+// ---------- 管理后台 ----------
+
+export interface AdminOverviewDTO {
+  users_total: number;
+  users_new_today: number;
+  tasks_today: number;
+  success_rate_today: number | null;
+  revenue_today_fen: number;
+  credits_consumed_today: number;
+  queue: { queued: number; running: number };
+  pending_reviews: number;
+  /** 近 14 天每日任务数，最后一项为今天 */
+  trend: { date: string; tasks: number; succeeded: number }[];
+}
+
+export interface AdminModelDTO {
+  code: string;
+  name: string;
+  modality: Modality;
+  enabled: boolean;
+  breaker_open: boolean;
+  /** 网关 5 分钟窗口 */
+  window_samples: number;
+  window_success_rate: number | null;
+  /** 近 24 小时任务统计 */
+  tasks_24h: number;
+  success_rate_24h: number | null;
+  p95_sec_24h: number | null;
+}
+
+export interface ReviewItemDTO {
+  post: PostDTO;
+  /** reviewing：发布时机审存疑；reported：被举报 */
+  reason: 'reviewing' | 'reported';
+  machine_labels: string[];
+  reports: { reason: ReportReason; count: number }[];
 }
 
 export interface Page<T> {

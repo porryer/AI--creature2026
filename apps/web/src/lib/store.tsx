@@ -6,6 +6,8 @@ import {
   modelByCode,
   TIER_LABEL,
   type AssetDTO,
+  type FolderDTO,
+  type GenerationParams,
   type LedgerEntryDTO,
   type MeDTO,
   type OutputDTO,
@@ -16,7 +18,7 @@ import {
 } from '@creature/shared';
 import { api, ApiError, BACKEND, refresh, subscribeEvents } from './api';
 import { INITIAL_ASSETS, INITIAL_LEDGER, NOW } from './mock';
-import type { Asset, LedgerEntry, Modality, ModelInfo, Notice, Output, Task, Toast } from './types';
+import type { Asset, Folder, LedgerEntry, Modality, ModelInfo, Notice, Output, Task, Toast } from './types';
 
 // 全局状态：积分账户、生成任务、资产、积分流水、通知。
 // mock 模式：任务进度在本地按时间模拟（离线演示）；
@@ -35,6 +37,9 @@ export interface Handoff {
   firstFrame?: Asset;
   /** 打开指定画布（项目页进入） */
   canvasId?: string;
+  /** 做同款：沿用原作的参数与模型 */
+  params?: GenerationParams;
+  modelCode?: string | null;
 }
 
 export interface Profile {
@@ -43,6 +48,7 @@ export interface Profile {
   planCode: string;
   planName: string;
   planExpiresAt: string | null;
+  role: 'user' | 'admin';
 }
 
 interface State {
@@ -53,6 +59,9 @@ interface State {
   expiringSoon: number;
   tasks: Task[];
   assets: Asset[];
+  /** 资产列表的下一页游标（api 模式） */
+  assetsCursor: string | null;
+  folders: Folder[];
   ledger: LedgerEntry[];
   notices: Notice[];
   toasts: Toast[];
@@ -69,7 +78,9 @@ type Action =
   | { type: 'grant'; credits: number; label: string }
   | { type: 'set_credits'; available: number; frozen: number; expiringSoon: number }
   | { type: 'set_ledger'; ledger: LedgerEntry[] }
-  | { type: 'hydrate'; profile: Profile; available: number; frozen: number; expiringSoon: number; tasks: Task[]; assets: Asset[]; ledger: LedgerEntry[] }
+  | { type: 'hydrate'; profile: Profile; available: number; frozen: number; expiringSoon: number; tasks: Task[]; assets: Asset[]; assetsCursor: string | null; folders: Folder[]; ledger: LedgerEntry[] }
+  | { type: 'more_assets'; assets: Asset[]; cursor?: string | null }
+  | { type: 'set_folders'; folders: Folder[] }
   | { type: 'auth'; auth: AuthState }
   | { type: 'reset' }
   | { type: 'add_assets'; assets: Asset[] }
@@ -144,10 +155,14 @@ export function assetFromDTO(a: AssetDTO): Asset {
     url: a.url,
     contentId: a.content_id,
     source: a.source,
+    folder: a.folder_id ?? undefined,
   };
 }
 
-function simplifyRatio(w: number, h: number): string {
+const folderFromDTO = (f: FolderDTO): Folder => ({ id: f.id, name: f.name, count: f.asset_count });
+
+/** 把宽高换算成最接近的常用比例 */
+export function simplifyRatio(w: number, h: number): string {
   const known = ['1:1', '3:4', '4:3', '9:16', '16:9', '21:9'];
   const r = w / h;
   return known.reduce((best, k) => {
@@ -167,7 +182,7 @@ const ledgerFromDTO = (e: LedgerEntryDTO): LedgerEntry => ({
   balance: e.balance_after,
 });
 
-const profileFromDTO = (m: MeDTO): Profile => ({ nickname: m.nickname, phoneMasked: m.phone_masked, planCode: m.plan.code, planName: m.plan.name, planExpiresAt: m.plan.expires_at });
+const profileFromDTO = (m: MeDTO): Profile => ({ nickname: m.nickname, phoneMasked: m.phone_masked, planCode: m.plan.code, planName: m.plan.name, planExpiresAt: m.plan.expires_at, role: m.role });
 
 export function errorText(e: unknown): string {
   return e instanceof ApiError ? e.message : '网络异常，请检查网络后重试';
@@ -222,11 +237,33 @@ function reducer(s: State, a: Action): State {
     case 'set_ledger':
       return { ...s, ledger: a.ledger };
     case 'hydrate':
-      return { ...s, auth: 'authed', profile: a.profile, available: a.available, frozen: a.frozen, expiringSoon: a.expiringSoon, tasks: a.tasks, assets: a.assets, ledger: a.ledger, notices: [] };
+      return {
+        ...s,
+        auth: 'authed',
+        profile: a.profile,
+        available: a.available,
+        frozen: a.frozen,
+        expiringSoon: a.expiringSoon,
+        tasks: a.tasks,
+        assets: a.assets,
+        assetsCursor: a.assetsCursor,
+        folders: a.folders,
+        ledger: a.ledger,
+        notices: [],
+      };
+    case 'more_assets': {
+      // 合并按条件拉取的作品（翻页、按文件夹或搜索），已有的以服务端数据为准
+      const incoming = new Map(a.assets.map((x) => [x.id, x]));
+      const merged = s.assets.map((x) => incoming.get(x.id) ?? x);
+      const known = new Set(s.assets.map((x) => x.id));
+      return { ...s, assets: [...merged, ...a.assets.filter((x) => !known.has(x.id))], assetsCursor: a.cursor === undefined ? s.assetsCursor : a.cursor };
+    }
+    case 'set_folders':
+      return { ...s, folders: a.folders };
     case 'auth':
       return { ...s, auth: a.auth };
     case 'reset':
-      return { ...s, auth: 'anon', profile: null, available: 0, frozen: 0, expiringSoon: 0, tasks: [], assets: [], ledger: [], notices: [], viewer: null };
+      return { ...s, auth: 'anon', profile: null, available: 0, frozen: 0, expiringSoon: 0, tasks: [], assets: [], assetsCursor: null, folders: [], ledger: [], notices: [], viewer: null };
     case 'add_assets': {
       const ids = new Set(s.assets.map((x) => x.id));
       return { ...s, assets: [...a.assets.filter((x) => !ids.has(x.id)), ...s.assets] };
@@ -296,12 +333,15 @@ function loadTheme(): Theme {
 
 const mockInitial = (): State => ({
   auth: 'authed',
-  profile: { nickname: '林夏', phoneMasked: '138****8000', planCode: 'pro', planName: '专业版', planExpiresAt: null },
+  profile: { nickname: '林夏', phoneMasked: '138****8000', planCode: 'pro', planName: '专业版', planExpiresAt: null, role: 'admin' },
   available: 1268,
   frozen: 0,
   expiringSoon: 20,
   tasks: seedTasks(),
   assets: INITIAL_ASSETS,
+  assetsCursor: null,
+  // 演示数据里文件夹 ID 与名称相同
+  folders: [...new Set(INITIAL_ASSETS.map((a) => a.folder).filter((f): f is string => !!f))].map((f) => ({ id: f, name: f })),
   ledger: INITIAL_LEDGER,
   notices: [
     { id: 'n1', time: NOW - 2 * 3600_000, kind: 'ok', title: '图像生成完成', body: '枫糖拿铁 · 4 张', read: true },
@@ -322,6 +362,8 @@ const apiInitial = (): State => ({
   expiringSoon: 0,
   tasks: [],
   assets: [],
+  assetsCursor: null,
+  folders: [],
   ledger: [],
   notices: [],
   toasts: [],
@@ -367,6 +409,15 @@ interface Ctx {
   dismiss: (id: string) => void;
   patchAsset: (id: string, patch: Partial<Asset>) => void;
   removeAssets: (ids: string[]) => Promise<void>;
+  /** 拉取更多作品并合并到本地（翻页、按文件夹或关键词） */
+  fetchAssets: (f?: { more?: boolean; folder?: string; q?: string }) => Promise<void>;
+  createFolder: (name: string) => Promise<Folder | null>;
+  renameFolder: (id: string, name: string) => Promise<boolean>;
+  deleteFolder: (id: string) => Promise<boolean>;
+  /** 移动到文件夹；folderId 为 null 时移出文件夹 */
+  moveAssets: (ids: string[], folderId: string | null) => Promise<boolean>;
+  /** 下载作品（生成作品带 AI 标识） */
+  downloadAsset: (a: Asset) => Promise<void>;
   setHandoff: (h: Handoff | null) => void;
   setTheme: (t: Theme) => void;
   openViewer: (a: Asset | null) => void;
@@ -674,6 +725,90 @@ export function StoreProvider({ children }: { children: ReactNode }) {
         }
         dispatch({ type: 'remove_assets', ids });
       },
+      async fetchAssets(f = {}) {
+        if (BACKEND !== 'api') return;
+        if (f.more && !ref.current.assetsCursor) return;
+        try {
+          const page = await api.assets({ cursor: f.more ? ref.current.assetsCursor : undefined, folder: f.folder, q: f.q });
+          dispatch({ type: 'more_assets', assets: page.data.map(assetFromDTO), cursor: f.more ? page.next_cursor : undefined });
+        } catch (e) {
+          toast(errorText(e), 'err');
+        }
+      },
+      async createFolder(name) {
+        const n = name.trim();
+        if (!n) return null;
+        if (BACKEND === 'mock') {
+          if (ref.current.folders.some((f) => f.name === n)) {
+            toast(`已有名为「${n}」的文件夹`, 'err');
+            return null;
+          }
+          const f = { id: n, name: n };
+          dispatch({ type: 'set_folders', folders: [...ref.current.folders, f] });
+          return f;
+        }
+        try {
+          const f = folderFromDTO(await api.createFolder(n));
+          dispatch({ type: 'set_folders', folders: [...ref.current.folders, f] });
+          return f;
+        } catch (e) {
+          toast(errorText(e), 'err');
+          return null;
+        }
+      },
+      async renameFolder(id, name) {
+        const n = name.trim();
+        if (!n) return false;
+        try {
+          if (BACKEND === 'api') await api.renameFolder(id, n);
+          dispatch({ type: 'set_folders', folders: ref.current.folders.map((f) => (f.id === id ? { ...f, name: n } : f)) });
+          return true;
+        } catch (e) {
+          toast(errorText(e), 'err');
+          return false;
+        }
+      },
+      async deleteFolder(id) {
+        try {
+          if (BACKEND === 'api') await api.deleteFolder(id);
+          dispatch({ type: 'set_folders', folders: ref.current.folders.filter((f) => f.id !== id) });
+          for (const a of ref.current.assets) if (a.folder === id) dispatch({ type: 'patch_asset', id: a.id, patch: { folder: undefined } });
+          return true;
+        } catch (e) {
+          toast(errorText(e), 'err');
+          return false;
+        }
+      },
+      async moveAssets(ids, folderId) {
+        try {
+          if (BACKEND === 'api') await api.moveAssets(ids, folderId);
+          for (const id of ids) dispatch({ type: 'patch_asset', id, patch: { folder: folderId ?? undefined } });
+          if (BACKEND === 'api') dispatch({ type: 'set_folders', folders: (await api.folders()).data.map(folderFromDTO) });
+          return true;
+        } catch (e) {
+          toast(errorText(e), 'err');
+          return false;
+        }
+      },
+      async downloadAsset(a) {
+        if (BACKEND === 'mock' || !a.url) {
+          toast(a.source === 'uploaded' ? '已开始下载（离线演示）' : '已开始下载 · 文件含显式与隐式 AI 标识（离线演示）', 'info');
+          return;
+        }
+        try {
+          const d = await api.downloadAsset(a.id);
+          // 服务端以附件形式返回，浏览器直接保存文件
+          const link = document.createElement('a');
+          link.href = d.url;
+          link.download = d.filename;
+          document.body.appendChild(link);
+          link.click();
+          link.remove();
+          toast(a.source === 'uploaded' ? `已开始下载「${d.filename}」` : `已开始下载「${d.filename}」· 含 AI 标识`);
+        } catch (e) {
+          toast(errorText(e), 'err');
+        }
+      },
       setHandoff: (h) => dispatch({ type: 'handoff', handoff: h }),
       setTheme: (t) => dispatch({ type: 'theme', theme: t }),
       openViewer: (a) => dispatch({ type: 'viewer', asset: a }),
@@ -687,7 +822,7 @@ export function StoreProvider({ children }: { children: ReactNode }) {
 
 /** 拉取当前用户、任务、资产、流水与余额（登录后与支付成功后使用） */
 async function snapshot() {
-  const [me, tasks, assets, ledger] = await Promise.all([api.me(), api.generations(), api.assets(), api.ledger()]);
+  const [me, tasks, assets, ledger, folders] = await Promise.all([api.me(), api.generations(), api.assets(), api.ledger(), api.folders()]);
   return {
     profile: profileFromDTO(me),
     available: me.credits.available,
@@ -695,6 +830,8 @@ async function snapshot() {
     expiringSoon: me.credits.expiring_soon,
     tasks: tasks.data.map(taskFromDTO),
     assets: assets.data.map(assetFromDTO),
+    assetsCursor: assets.next_cursor,
+    folders: folders.data.map(folderFromDTO),
     ledger: ledger.data.map(ledgerFromDTO),
   };
 }

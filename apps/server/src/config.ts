@@ -35,6 +35,8 @@ export interface AppConfig {
   /** 隐式标识中的服务提供者名称或编码 */
   serviceProviderCode: string;
   moderationExtraWords: string[];
+  /** 登录时授予管理后台权限的手机号 */
+  adminPhones: string[];
 }
 
 const DEV_SECRET = 'creature-dev-secret-do-not-use-in-production';
@@ -85,6 +87,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
     },
     serviceProviderCode: env.SERVICE_PROVIDER_CODE || 'CREATURE-DEV',
     moderationExtraWords: (env.MODERATION_EXTRA_WORDS || '').split(',').map((s) => s.trim()).filter(Boolean),
+    adminPhones: (env.ADMIN_PHONES || '').split(',').map((s) => s.trim()).filter(Boolean),
   };
 
   if (prod) {

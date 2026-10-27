@@ -1,11 +1,205 @@
-import { Check, Info, X } from 'lucide-react';
-import { useState } from 'react';
+import { REPORT_REASONS, type AdminModelDTO, type AdminOverviewDTO, type ReviewItemDTO } from '@creature/shared';
+import { Check, Info, RefreshCw, ShieldOff, X } from 'lucide-react';
+import { useCallback, useEffect, useState } from 'react';
 import { Art } from '../components/Art';
 import { Switch } from '../components/ui';
-import { ADMIN } from '../lib/mock';
-import { useStore } from '../lib/store';
+import { api, BACKEND } from '../lib/api';
+import { ADMIN, fmt, timeAgo } from '../lib/mock';
+import { errorText, simplifyRatio, useStore } from '../lib/store';
 
 export function Admin() {
+  return BACKEND === 'api' ? <LiveAdmin /> : <DemoAdmin />;
+}
+
+const pct = (v: number | null, digits = 1) => (v === null ? '—' : `${(v * 100).toFixed(digits)}%`);
+
+function modelHealth(m: AdminModelDTO): ['ok' | 'warn' | 'down', string] {
+  if (!m.enabled) return ['down', '未配置'];
+  if (m.breaker_open) return ['down', '已熔断'];
+  if (m.success_rate_24h !== null && m.success_rate_24h < 0.95) return ['warn', '波动'];
+  return ['ok', '正常'];
+}
+
+/** 接入后端：真实的运营概览、模型健康度与广场内容复核 */
+function LiveAdmin() {
+  const { state, toast } = useStore();
+  const [overview, setOverview] = useState<AdminOverviewDTO | null>(null);
+  const [models, setModels] = useState<AdminModelDTO[]>([]);
+  const [queue, setQueue] = useState<ReviewItemDTO[] | null>(null);
+  const [busy, setBusy] = useState<string | null>(null);
+  const isAdmin = state.profile?.role === 'admin';
+
+  const load = useCallback(async () => {
+    try {
+      const [o, m, q] = await Promise.all([api.adminOverview(), api.adminModels(), api.reviewQueue()]);
+      setOverview(o);
+      setModels(m.data);
+      setQueue(q.data);
+    } catch (e) {
+      toast(errorText(e), 'err');
+      setQueue([]);
+    }
+  }, [toast]);
+  useEffect(() => {
+    if (isAdmin) void load();
+  }, [isAdmin, load]);
+
+  if (!isAdmin) {
+    return (
+      <div className="page">
+        <div className="empty">
+          <ShieldOff size={28} />
+          <b>需要管理员权限</b>
+          <span>在后端配置 ADMIN_PHONES 后，用对应手机号重新登录即可进入管理后台</span>
+        </div>
+      </div>
+    );
+  }
+
+  const decide = async (item: ReviewItemDTO, action: 'approve' | 'remove') => {
+    setBusy(item.post.id);
+    try {
+      await api.decide(item.post.id, action);
+      setQueue((q) => q?.filter((x) => x.post.id !== item.post.id) ?? null);
+      setOverview((o) => (o ? { ...o, pending_reviews: Math.max(0, o.pending_reviews - 1) } : o));
+      toast(action === 'approve' ? '已通过，作品在广场可见，相关举报已驳回' : '已下架，相关举报已处理');
+    } catch (e) {
+      toast(errorText(e), 'err');
+    } finally {
+      setBusy(null);
+    }
+  };
+
+  const kpis = overview
+    ? [
+        { k: '今日生成任务', v: fmt(overview.tasks_today), d: `排队 ${overview.queue.queued} · 生成中 ${overview.queue.running}` },
+        { k: '今日成功率', v: pct(overview.success_rate_today), d: '失败与拦截均已返还积分' },
+        { k: '今日收入', v: `¥${fmt(overview.revenue_today_fen / 100)}`, d: `消耗 ${fmt(overview.credits_consumed_today)} 积分` },
+        { k: '用户', v: fmt(overview.users_total), d: `今日新增 ${overview.users_new_today}` },
+      ]
+    : [];
+
+  return (
+    <div className="page" style={{ display: 'flex', flexDirection: 'column', gap: 20 }}>
+      <div className="page-head" style={{ marginBottom: 0 }}>
+        <div>
+          <h2>运营概览</h2>
+          <p>数据按北京时间统计；模型健康度来自网关 5 分钟窗口与近 24 小时任务。</p>
+        </div>
+        <button className="btn" onClick={() => void load()}>
+          <RefreshCw size={14} /> 刷新
+        </button>
+      </div>
+      <div className="kpis">
+        {kpis.map((k) => (
+          <div className="panel kpi" key={k.k}>
+            <span className="k">{k.k}</span>
+            <span className="v">{k.v}</span>
+            <span className="d subtle">{k.d}</span>
+          </div>
+        ))}
+      </div>
+
+      <div className="admin-grid">
+        <section className="panel" aria-labelledby="models-title" style={{ minWidth: 0 }}>
+          <div className="section-title" style={{ padding: '16px 18px 0' }}>
+            <h3 id="models-title">模型健康度</h3>
+            <span className="subtle" style={{ fontSize: 12 }}>
+              5 分钟窗口成功率低于 85% 自动熔断
+            </span>
+          </div>
+          <div className="table-wrap">
+            <table className="data">
+              <thead>
+                <tr>
+                  <th>模型</th>
+                  <th>状态</th>
+                  <th className="num">24 小时任务</th>
+                  <th className="num">成功率</th>
+                  <th className="num">P95 耗时</th>
+                  <th className="num">5 分钟样本</th>
+                </tr>
+              </thead>
+              <tbody>
+                {models.map((m) => {
+                  const [h, label] = modelHealth(m);
+                  return (
+                    <tr key={m.code}>
+                      <td>{m.name}</td>
+                      <td>
+                        <span className={`health ${h}`}>
+                          <i />
+                          {label}
+                        </span>
+                      </td>
+                      <td className="num">{fmt(m.tasks_24h)}</td>
+                      <td className="num" style={{ color: h === 'warn' ? 'var(--gold)' : undefined }}>
+                        {pct(m.success_rate_24h)}
+                      </td>
+                      <td className="num">{m.p95_sec_24h === null ? '—' : m.p95_sec_24h >= 60 ? `${(m.p95_sec_24h / 60).toFixed(1)} 分` : `${m.p95_sec_24h} 秒`}</td>
+                      <td className="num">{m.window_samples}</td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+          {overview && (
+            <div style={{ padding: '14px 18px 18px' }}>
+              <div className="eyebrow" style={{ marginBottom: 8 }}>
+                近 14 天日生成量（次）
+              </div>
+              <TrendChart data={overview.trend.map((d) => d.tasks)} unit="次" />
+            </div>
+          )}
+        </section>
+
+        <section className="panel" aria-labelledby="mod-title" style={{ minWidth: 0 }}>
+          <div className="section-title" style={{ padding: '16px 18px 4px' }}>
+            <h3 id="mod-title">内容复核 · 灵感广场</h3>
+            <span className="tag text">{queue?.length ?? 0} 条待处理</span>
+          </div>
+          {queue === null ? (
+            <p className="subtle" style={{ padding: 18 }}>
+              加载中…
+            </p>
+          ) : queue.length === 0 ? (
+            <div className="empty" style={{ margin: 16 }}>
+              <Check size={24} />
+              <b>复核队列已清空</b>
+              <span>发布时机审存疑或被举报的作品会出现在这里</span>
+            </div>
+          ) : (
+            queue.map((item) => (
+              <div key={item.post.id} className="mod-item">
+                <Art prompt={item.post.prompt ?? item.post.title} ratio={item.post.width && item.post.height ? simplifyRatio(item.post.width, item.post.height) : '1:1'} kind={item.post.kind} url={item.post.url} badge={false} long={120} />
+                <div className="grow">
+                  <p>
+                    <b>{item.post.title}</b> · {item.post.prompt}
+                  </p>
+                  <span className="subtle" style={{ fontSize: 12 }}>
+                    {item.reason === 'reviewing'
+                      ? `机审存疑 · ${item.machine_labels.map((l) => l.replace(/^review:/, '')).join('、') || '待复核'}`
+                      : `被举报 · ${item.reports.map((r) => `${REPORT_REASONS[r.reason]} ×${r.count}`).join('、')}${item.post.status === 'hidden' ? ' · 已自动隐藏' : ''}`}{' '}
+                    · {item.post.author.nickname} · {timeAgo(Date.parse(item.post.created_at))}
+                  </span>
+                </div>
+                <button className="btn sm" aria-label={`通过 ${item.post.title}`} title="通过" disabled={busy === item.post.id} onClick={() => void decide(item, 'approve')}>
+                  <Check size={14} />
+                </button>
+                <button className="btn sm danger" aria-label={`下架 ${item.post.title}`} title="下架" disabled={busy === item.post.id} onClick={() => void decide(item, 'remove')}>
+                  <X size={14} />
+                </button>
+              </div>
+            ))
+          )}
+        </section>
+      </div>
+    </div>
+  );
+}
+
+function DemoAdmin() {
   const { toast } = useStore();
   const [models, setModels] = useState(ADMIN.models.map((m) => ({ ...m, enabled: m.health !== 'down', weight: m.share })));
   const [queue, setQueue] = useState(ADMIN.moderation);
@@ -110,7 +304,7 @@ export function Admin() {
             <div className="eyebrow" style={{ marginBottom: 8 }}>
               近 19 天日生成量（千次）
             </div>
-            <TrendChart />
+            <TrendChart data={ADMIN.trend} unit="千次" />
           </div>
         </section>
 
@@ -150,18 +344,18 @@ export function Admin() {
   );
 }
 
-function TrendChart() {
-  const data = ADMIN.trend;
+function TrendChart({ data, unit }: { data: number[]; unit: string }) {
   const W = 560;
   const H = 120;
   const pad = { l: 28, r: 10, t: 10, b: 16 };
-  const top = Math.ceil(Math.max(...data) / 50) * 50;
+  const step = Math.max(...data) > 50 ? 50 : 5;
+  const top = Math.max(step, Math.ceil(Math.max(...data) / step) * step);
   const x = (i: number) => pad.l + (i / (data.length - 1)) * (W - pad.l - pad.r);
   const y = (v: number) => pad.t + (H - pad.t - pad.b) * (1 - v / top);
   const line = data.map((v, i) => `${i ? 'L' : 'M'}${x(i).toFixed(1)},${y(v).toFixed(1)}`).join(' ');
   const area = `${line} L${x(data.length - 1).toFixed(1)},${y(0)} L${x(0)},${y(0)} Z`;
   return (
-    <svg className="chart" viewBox={`0 0 ${W} ${H}`} role="img" aria-label={`日生成量由 ${data[0]} 千次增长到 ${data[data.length - 1]} 千次`}>
+    <svg className="chart" viewBox={`0 0 ${W} ${H}`} role="img" aria-label={`日生成量由 ${data[0]} ${unit}变为 ${data[data.length - 1]} ${unit}`}>
       {[0, top / 2, top].map((t) => (
         <g key={t}>
           <line className="grid" x1={pad.l} x2={W - pad.r} y1={y(t)} y2={y(t)} />

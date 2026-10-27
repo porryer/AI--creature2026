@@ -1,15 +1,22 @@
 import { stripAiTextLabel } from '@creature/shared';
 import { Download, Film, Heart, Repeat2, Send } from 'lucide-react';
+import { useState } from 'react';
+import { api, BACKEND } from '../lib/api';
 import { navigate } from '../lib/router';
-import { useStore } from '../lib/store';
+import { errorText, useStore } from '../lib/store';
+import type { Asset } from '../lib/types';
 import { Art } from './Art';
-import { Modal } from './ui';
+import { Modal, Switch } from './ui';
 
 /** 作品详情：大图 / 播放、生成参数、AI 标识信息与后续操作 */
 export function AssetViewer() {
-  const { state, openViewer, patchAsset, toast, setHandoff } = useStore();
-  const a = state.viewer;
-  if (!a) return null;
+  const { state } = useStore();
+  return state.viewer ? <ViewerBody key={state.viewer.id} a={state.viewer} /> : null;
+}
+
+function ViewerBody({ a }: { a: Asset }) {
+  const { openViewer, patchAsset, setHandoff, downloadAsset } = useStore();
+  const [publishing, setPublishing] = useState(false);
   const close = () => openViewer(null);
   const contentId = a.contentId ?? `CRT-${new Date(a.createdAt).toISOString().slice(0, 10).replace(/-/g, '')}-${a.id.slice(-5).toUpperCase()}`;
   const uploaded = a.source === 'uploaded';
@@ -68,7 +75,7 @@ export function AssetViewer() {
             </dd>
           </dl>
           <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginTop: 'auto' }}>
-            <button className="btn primary" onClick={() => toast(uploaded ? '已开始下载（原型演示）' : '已开始下载 · 文件含显式与隐式 AI 标识（原型演示）', 'info')}>
+            <button className="btn primary" onClick={() => void downloadAsset(a)}>
               <Download size={15} /> 下载
             </button>
             <button className="btn" onClick={() => patchAsset(a.id, { favorite: !a.favorite })} aria-pressed={!!a.favorite}>
@@ -98,14 +105,77 @@ export function AssetViewer() {
                 <Film size={15} /> 转为视频
               </button>
             )}
-            {!uploaded && (
-              <button className="btn ghost" onClick={() => toast('已发布到灵感广场，审核通过后可见', 'info')}>
-                <Send size={15} /> 发布
+            {!uploaded && (a.kind === 'image' || a.kind === 'video') && (
+              <button className="btn ghost" aria-expanded={publishing} onClick={() => setPublishing((v) => !v)}>
+                <Send size={15} /> 发布到广场
               </button>
             )}
           </div>
+          {publishing && <PublishForm a={a} onDone={() => setPublishing(false)} />}
         </div>
       </div>
     </Modal>
+  );
+}
+
+/** 发布到灵感广场：标题、标签、是否公开提示词；发布时机审，存疑的进入人工复核 */
+function PublishForm({ a, onDone }: { a: Asset; onDone: () => void }) {
+  const { toast } = useStore();
+  const [title, setTitle] = useState(a.title.slice(0, 40));
+  const [tags, setTags] = useState('');
+  const [showPrompt, setShowPrompt] = useState(true);
+  const [busy, setBusy] = useState(false);
+  const tagList = [...new Set(tags.split(/[\s,，#]+/).map((t) => t.trim()).filter(Boolean))].slice(0, 5);
+
+  const submit = async () => {
+    if (BACKEND === 'mock') {
+      toast('已发布到灵感广场（离线演示）');
+      return onDone();
+    }
+    setBusy(true);
+    try {
+      const post = await api.publish({ asset_id: a.id, title: title.trim(), tags: tagList, show_prompt: showPrompt });
+      toast(post.status === 'reviewing' ? '已提交，人工审核通过后会出现在灵感广场' : post.status === 'published' ? '已发布到灵感广场' : '该作品目前不可见，请联系客服', post.status === 'published' ? 'ok' : 'info');
+      onDone();
+    } catch (e) {
+      toast(errorText(e), 'err');
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <form
+      className="panel publish-form"
+      onSubmit={(e) => {
+        e.preventDefault();
+        void submit();
+      }}
+    >
+      <div className="field">
+        <label htmlFor="pub-title">标题</label>
+        <input id="pub-title" className="input" maxLength={40} value={title} onChange={(e) => setTitle(e.target.value)} />
+      </div>
+      <div className="field">
+        <label htmlFor="pub-tags">
+          标签 <span className="subtle">最多 5 个，空格分隔</span>
+        </label>
+        <input id="pub-tags" className="input" placeholder="如：咖啡 海报 秋季" value={tags} onChange={(e) => setTags(e.target.value)} />
+      </div>
+      <div className="inline-row">
+        <label htmlFor="pub-prompt" style={{ fontSize: 13 }}>
+          公开提示词 <span className="subtle">关闭后他人做同款只能沿用参数</span>
+        </label>
+        <Switch id="pub-prompt" checked={showPrompt} onChange={setShowPrompt} label="公开提示词" />
+      </div>
+      <div style={{ display: 'flex', gap: 8 }}>
+        <button type="button" className="btn" onClick={onDone}>
+          取消
+        </button>
+        <button type="submit" className="btn primary" style={{ flex: 1 }} disabled={busy || !title.trim()}>
+          {busy ? '发布中…' : '发布'}
+        </button>
+      </div>
+    </form>
   );
 }

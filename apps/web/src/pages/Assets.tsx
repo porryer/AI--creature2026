@@ -1,5 +1,5 @@
-import { AudioLines, Check, Download, FileText, Folder, FolderInput, Heart, Image as ImageIcon, LayoutGrid, Palette, Plus, Trash2, Upload, UserRound, Video, X } from 'lucide-react';
-import { useMemo, useState } from 'react';
+import { AudioLines, Check, Download, FileText, Folder, FolderInput, FolderPlus, Heart, Image as ImageIcon, LayoutGrid, Palette, Pencil, Plus, Trash2, Upload, UserRound, Video, X } from 'lucide-react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { Art } from '../components/Art';
 import { BRAND_KIT, CHARACTERS, timeAgo } from '../lib/mock';
 import { navigate } from '../lib/router';
@@ -8,23 +8,41 @@ import { useStore } from '../lib/store';
 type Cat = 'all' | 'image' | 'video' | 'audio' | 'text' | 'favorite' | 'characters' | 'brand' | `folder:${string}`;
 
 export function Assets() {
-  const { state, openViewer, removeAssets, toast, setHandoff, uploadImage } = useStore();
-  const [uploading, setUploading] = useState(0);
+  const { state, mode, openViewer, removeAssets, toast, setHandoff, uploadImage, fetchAssets, createFolder, renameFolder, deleteFolder, moveAssets, downloadAsset } = useStore();
   const [cat, setCat] = useState<Cat>('all');
   const [picked, setPicked] = useState<string[]>([]);
-  const [confirmDel, setConfirmDel] = useState(false);
+  const [confirm, setConfirm] = useState<'assets' | 'folder' | null>(null);
   const [q, setQ] = useState('');
+  const [uploading, setUploading] = useState(0);
+  const [moving, setMoving] = useState(false);
+  const [naming, setNaming] = useState<{ id: string | null; value: string } | null>(null);
+  const [loadingMore, setLoadingMore] = useState(false);
 
-  const folders = useMemo(() => Array.from(new Set(state.assets.map((a) => a.folder).filter(Boolean))) as string[], [state.assets]);
+  const folderId = cat.startsWith('folder:') ? cat.slice(7) : null;
+  const folder = folderId ? state.folders.find((f) => f.id === folderId) : undefined;
   const count = (fn: (k: (typeof state.assets)[number]) => boolean) => state.assets.filter(fn).length;
   const list = useMemo(() => {
-    let l = state.assets;
+    let l = [...state.assets].sort((a, b) => b.createdAt - a.createdAt);
     if (cat === 'favorite') l = l.filter((a) => a.favorite);
-    else if (cat.startsWith('folder:')) l = l.filter((a) => a.folder === cat.slice(7));
+    else if (folderId) l = l.filter((a) => a.folder === folderId);
     else if (cat !== 'all' && cat !== 'characters' && cat !== 'brand') l = l.filter((a) => a.kind === cat);
     if (q.trim()) l = l.filter((a) => (a.title + a.prompt).includes(q.trim()));
     return l;
-  }, [state.assets, cat, q]);
+  }, [state.assets, cat, folderId, q]);
+
+  // 接入后端时本地只有最近的作品：切换文件夹或搜索时从服务端补齐
+  // （store 的方法随状态变化重建，用 ref 避免作为依赖反复触发）
+  const fetchRef = useRef(fetchAssets);
+  fetchRef.current = fetchAssets;
+  useEffect(() => {
+    if (folderId) void fetchRef.current({ folder: folderId });
+  }, [folderId]);
+  useEffect(() => {
+    const kw = q.trim();
+    if (!kw) return;
+    const t = window.setTimeout(() => void fetchRef.current({ q: kw }), 300);
+    return () => window.clearTimeout(t);
+  }, [q]);
 
   const nav: { id: Cat; label: string; icon: typeof ImageIcon; n?: number }[] = [
     { id: 'all', label: '全部作品', icon: LayoutGrid, n: state.assets.length },
@@ -36,31 +54,95 @@ export function Assets() {
   ];
 
   const toggle = (id: string) => setPicked((p) => (p.includes(id) ? p.filter((x) => x !== id) : [...p, id]));
+  const pickCat = (c: Cat) => {
+    setCat(c);
+    setPicked([]);
+    setConfirm(null);
+    setMoving(false);
+  };
+
+  const submitName = async () => {
+    if (!naming) return;
+    if (naming.id === null) {
+      const f = await createFolder(naming.value);
+      if (f) {
+        setNaming(null);
+        // 从“移动到”菜单新建时直接移入
+        if (moving && picked.length) await move(f.id, f.name);
+      }
+    } else if (await renameFolder(naming.id, naming.value)) setNaming(null);
+  };
+
+  const move = async (id: string | null, name?: string) => {
+    if (await moveAssets(picked, id)) toast(id ? `已将 ${picked.length} 个作品移到「${name}」` : `已将 ${picked.length} 个作品移出文件夹`);
+    setMoving(false);
+    setPicked([]);
+  };
+
+  const downloadPicked = async () => {
+    const items = state.assets.filter((a) => picked.includes(a.id)).slice(0, 10);
+    for (const a of items) await downloadAsset(a);
+    if (picked.length > 10) toast('一次最多下载 10 个，其余请分批下载', 'info');
+  };
+
+  const nameInput = (
+    <form
+      className="folder-name"
+      onSubmit={(e) => {
+        e.preventDefault();
+        void submitName();
+      }}
+    >
+      <input
+        className="input"
+        autoFocus
+        maxLength={20}
+        aria-label="文件夹名称"
+        placeholder="文件夹名称"
+        value={naming?.value ?? ''}
+        onChange={(e) => setNaming((n) => (n ? { ...n, value: e.target.value } : n))}
+        onKeyDown={(e) => e.key === 'Escape' && setNaming(null)}
+      />
+      <button className="btn sm primary" type="submit" disabled={!naming?.value.trim()}>
+        确定
+      </button>
+      <button className="btn sm" type="button" aria-label="取消" onClick={() => setNaming(null)}>
+        <X size={14} />
+      </button>
+    </form>
+  );
 
   return (
     <div className="page">
       <div className="assets">
         <nav className="side-nav" aria-label="资产分类">
           {nav.map((n) => (
-            <button key={n.id} aria-pressed={cat === n.id} onClick={() => (setCat(n.id), setPicked([]))}>
+            <button key={n.id} aria-pressed={cat === n.id} onClick={() => pickCat(n.id)}>
               <n.icon size={16} /> {n.label}
               <span className="count">{n.n}</span>
             </button>
           ))}
           <div className="group eyebrow">一致性资产</div>
-          <button aria-pressed={cat === 'characters'} onClick={() => setCat('characters')}>
+          <button aria-pressed={cat === 'characters'} onClick={() => pickCat('characters')}>
             <UserRound size={16} /> 角色库 <span className="count">{CHARACTERS.length}</span>
           </button>
-          <button aria-pressed={cat === 'brand'} onClick={() => setCat('brand')}>
+          <button aria-pressed={cat === 'brand'} onClick={() => pickCat('brand')}>
             <Palette size={16} /> 品牌套件 <span className="count">1</span>
           </button>
           <div className="group eyebrow">文件夹</div>
-          {folders.map((f) => (
-            <button key={f} aria-pressed={cat === `folder:${f}`} onClick={() => (setCat(`folder:${f}`), setPicked([]))}>
-              <Folder size={16} /> {f}
-              <span className="count">{count((a) => a.folder === f)}</span>
+          {state.folders.map((f) => (
+            <button key={f.id} aria-pressed={cat === `folder:${f.id}`} onClick={() => pickCat(`folder:${f.id}`)}>
+              <Folder size={16} /> {f.name}
+              <span className="count">{f.count ?? count((a) => a.folder === f.id)}</span>
             </button>
           ))}
+          {naming && naming.id === null && !moving ? (
+            nameInput
+          ) : (
+            <button className="subtle" onClick={() => setNaming({ id: null, value: '' })}>
+              <FolderPlus size={16} /> 新建文件夹
+            </button>
+          )}
         </nav>
 
         <div style={{ minWidth: 0 }}>
@@ -71,11 +153,21 @@ export function Assets() {
           ) : (
             <>
               <div className="page-head" style={{ marginBottom: 14 }}>
-                <div>
-                  <h2>{nav.find((n) => n.id === cat)?.label ?? cat.slice(7)}</h2>
-                  <p>未收藏的作品保留 180 天，收藏后永久保存。下载文件均带 AI 生成标识。</p>
+                <div style={{ minWidth: 0 }}>
+                  {naming && naming.id && naming.id === folderId ? nameInput : <h2>{folder?.name ?? nav.find((n) => n.id === cat)?.label ?? '文件夹'}</h2>}
+                  <p>未收藏的作品保留 180 天，收藏后永久保存。生成作品下载后带 AI 标识，上传的素材不加标识。</p>
                 </div>
                 <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+                  {folder && !naming && (
+                    <>
+                      <button className="btn" onClick={() => setNaming({ id: folder.id, value: folder.name })}>
+                        <Pencil size={14} /> 重命名
+                      </button>
+                      <button className="btn" onClick={() => setConfirm('folder')}>
+                        <Trash2 size={14} /> 删除文件夹
+                      </button>
+                    </>
+                  )}
                   <input id="asset-search" className="input" style={{ width: 220 }} placeholder="搜索：如“红色背景的猫”" value={q} onChange={(e) => setQ(e.target.value)} aria-label="搜索资产" />
                   <label className="btn" title="支持 PNG、JPEG、WebP，单个不超过 20 MB" aria-busy={uploading > 0}>
                     <Upload size={15} /> {uploading > 0 ? `上传中 · ${uploading}` : '上传素材'}
@@ -91,47 +183,91 @@ export function Assets() {
                         if (!files.length) return;
                         setUploading((n) => n + files.length);
                         const done = await Promise.all(files.map((f) => uploadImage(f).finally(() => setUploading((n) => n - 1))));
-                        const ok = done.filter(Boolean).length;
-                        if (ok) toast(`已上传 ${ok} 个素材，审核通过并收录到资产库`);
+                        const ok = done.filter((a): a is NonNullable<typeof a> => !!a);
+                        // 在文件夹里上传时直接归入该文件夹
+                        if (ok.length && folderId) await moveAssets(ok.map((a) => a.id), folderId);
+                        if (ok.length) toast(`已上传 ${ok.length} 个素材，审核通过并收录到资产库`);
                       }}
                     />
                   </label>
                 </div>
               </div>
+              {confirm === 'folder' && folder && (
+                <div className="inline-confirm" style={{ marginBottom: 14 }}>
+                  <span style={{ flex: 1 }}>删除文件夹「{folder.name}」？其中的作品不会被删除，会移回“全部作品”。</span>
+                  <button className="btn sm" onClick={() => setConfirm(null)}>
+                    取消
+                  </button>
+                  <button
+                    className="btn sm danger"
+                    onClick={async () => {
+                      if (await deleteFolder(folder.id)) {
+                        toast(`已删除文件夹「${folder.name}」`);
+                        pickCat('all');
+                      }
+                    }}
+                  >
+                    删除
+                  </button>
+                </div>
+              )}
               {picked.length > 0 && (
-                <div className="bulkbar" role="toolbar" aria-label="批量操作">
+                <div className="bulkbar" role="toolbar" aria-label="批量操作" style={{ position: 'relative' }}>
                   <b style={{ marginRight: 'auto' }}>已选 {picked.length} 项</b>
-                  <button className="btn sm" onClick={() => toast(`已开始打包下载 ${picked.length} 个文件（原型演示）`, 'info')}>
+                  <button className="btn sm" onClick={() => void downloadPicked()}>
                     <Download size={14} /> 下载
                   </button>
                   <button className="btn sm" onClick={() => (setHandoff({ to: 'canvas' }), navigate('canvas'), toast(`已将 ${picked.length} 个素材加入画布`))}>
                     <Plus size={14} /> 加入画布
                   </button>
-                  <button className="btn sm" onClick={() => toast('已移动到文件夹「山野咖啡」')}>
+                  <button className="btn sm" aria-expanded={moving} onClick={() => setMoving((v) => !v)}>
                     <FolderInput size={14} /> 移动
                   </button>
-                  <button className="btn sm" onClick={() => setConfirmDel(true)}>
+                  <button className="btn sm" onClick={() => setConfirm('assets')}>
                     <Trash2 size={14} /> 删除
                   </button>
                   <button className="btn sm" aria-label="取消选择" onClick={() => setPicked([])}>
                     <X size={14} />
                   </button>
+                  {moving && (
+                    <div className="popover move-menu" role="menu" aria-label="移动到文件夹">
+                      <div className="popover-head">移动到</div>
+                      <div className="popover-list">
+                        {state.folders.map((f) => (
+                          <button key={f.id} role="menuitem" disabled={f.id === folderId} onClick={() => void move(f.id, f.name)}>
+                            <Folder size={15} /> {f.name}
+                          </button>
+                        ))}
+                        {folderId && (
+                          <button role="menuitem" onClick={() => void move(null)}>
+                            <X size={15} /> 移出文件夹
+                          </button>
+                        )}
+                        {naming && naming.id === null ? (
+                          <div style={{ padding: 8 }}>{nameInput}</div>
+                        ) : (
+                          <button role="menuitem" onClick={() => setNaming({ id: null, value: '' })}>
+                            <FolderPlus size={15} /> 新建文件夹并移入
+                          </button>
+                        )}
+                      </div>
+                    </div>
+                  )}
                 </div>
               )}
-              {confirmDel && (
+              {confirm === 'assets' && picked.length > 0 && (
                 <div className="inline-confirm" style={{ marginBottom: 14 }}>
-                  <span style={{ flex: 1 }}>删除 {picked.length} 个作品？删除后 30 天内可在回收站恢复。</span>
-                  <button className="btn sm" onClick={() => setConfirmDel(false)}>
+                  <span style={{ flex: 1 }}>删除 {picked.length} 个作品？已发布到灵感广场的会同时撤回。</span>
+                  <button className="btn sm" onClick={() => setConfirm(null)}>
                     取消
                   </button>
                   <button
-                    className="btn sm primary"
-                    style={{ background: 'var(--danger)', borderColor: 'var(--danger)', color: 'var(--surface)' }}
+                    className="btn sm danger"
                     onClick={async () => {
                       await removeAssets(picked);
                       toast(`已删除 ${picked.length} 个作品`);
                       setPicked([]);
-                      setConfirmDel(false);
+                      setConfirm(null);
                     }}
                   >
                     删除
@@ -140,12 +276,14 @@ export function Assets() {
               )}
               {list.length === 0 ? (
                 <div className="empty">
-                  <ImageIcon size={28} />
-                  <b>这里还没有作品</b>
-                  <span>去创作工作台生成，作品会自动收录到资产库</span>
-                  <button className="btn primary" onClick={() => navigate('studio')}>
-                    去创作
-                  </button>
+                  {folder ? <Folder size={28} /> : <ImageIcon size={28} />}
+                  <b>{folder ? '文件夹是空的' : '这里还没有作品'}</b>
+                  <span>{folder ? '在其他分类中选中作品，点“移动”放进这个文件夹' : '去创作工作台生成，作品会自动收录到资产库'}</span>
+                  {!folder && (
+                    <button className="btn primary" onClick={() => navigate('studio')}>
+                      去创作
+                    </button>
+                  )}
                 </div>
               ) : (
                 <div className="asset-grid">
@@ -167,6 +305,21 @@ export function Assets() {
                       </div>
                     );
                   })}
+                </div>
+              )}
+              {mode === 'api' && state.assetsCursor && !folderId && !q.trim() && (
+                <div style={{ display: 'flex', justifyContent: 'center', marginTop: 18 }}>
+                  <button
+                    className="btn"
+                    disabled={loadingMore}
+                    onClick={async () => {
+                      setLoadingMore(true);
+                      await fetchAssets({ more: true });
+                      setLoadingMore(false);
+                    }}
+                  >
+                    {loadingMore ? '加载中…' : '加载更多'}
+                  </button>
                 </div>
               )}
             </>

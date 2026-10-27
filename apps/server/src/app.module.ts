@@ -2,10 +2,12 @@ import { Controller, Get, Inject, INestApplication, Module, type DynamicModule }
 import { NestFactory } from '@nestjs/core';
 import type { NestExpressApplication } from '@nestjs/platform-express';
 import cookieParser from 'cookie-parser';
+import { AdminModule } from './admin/admin.module';
 import { AssetsModule } from './assets/assets.module';
 import { AuthModule } from './auth/auth.module';
 import { BillingModule } from './billing/billing.module';
 import { CanvasesModule } from './canvases/canvases.module';
+import { CommunityModule } from './community/community.module';
 import { AllExceptionsFilter, requestIdMiddleware } from './common/http';
 import { AppConfig, CONFIG, loadConfig } from './config';
 import { CoreModule } from './core.module';
@@ -37,7 +39,7 @@ export class AppModule {
   static forRoot(config: AppConfig): DynamicModule {
     return {
       module: AppModule,
-      imports: [CoreModule.forRoot(config), AuthModule, CreditsModule, UsersModule, GatewayModule, AssetsModule, GenerationsModule, BillingModule, CanvasesModule],
+      imports: [CoreModule.forRoot(config), AuthModule, CreditsModule, UsersModule, GatewayModule, AssetsModule, GenerationsModule, BillingModule, CanvasesModule, CommunityModule, AdminModule],
       controllers: [HealthController],
       providers: [JobsService],
     };
