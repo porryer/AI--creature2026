@@ -13,7 +13,7 @@ AI 全模态创作平台的调研与设计文档。建议按顺序阅读：
 | 07 | [开发计划与里程碑](./07-roadmap.md) | 26 周路线、Sprint 拆解、团队配置、成本测算、风险 | 管理、全员 |
 | 08 | [合规与内容安全](./08-compliance.md) | 法规清单、备案路径、显式 / 隐式标识、审核、个人信息保护 | 产品、法务、研发 |
 
-配套的可交互原型见 [`../prototype`](../prototype/)。
+代码实现：用户端 [`apps/web`](../apps/web/)、后端 [`apps/server`](../apps/server/)、共享包 [`packages/shared`](../packages/shared/)。当前实现范围见 [技术架构 · 第 10 节](./03-architecture.md#10-当前实现sprint-1)。
 
 ## 一页摘要
 

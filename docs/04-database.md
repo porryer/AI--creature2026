@@ -3,6 +3,8 @@
 > 数据库：PostgreSQL 16（主库）· Redis 7（缓存 / 计数）· ClickHouse（分析）
 > 关联文档：[03 技术架构](./03-architecture.md) · [05 API 设计](./05-api.md)
 
+> **实现说明**：MVP 已落地的表结构见 [`apps/server/migrations/001_init.sql`](../apps/server/migrations/001_init.sql)，覆盖账号、会话、验证码、积分（账户 / 批次 / 冻结明细 / 流水）、生成任务、资产、审核记录、订单与订阅。与本文的差异：主键使用带类型前缀、按时间有序的文本 ID；积分与金额用 `integer`；生成任务暂未分区；新增 `credit_holds`（记录冻结扣自哪些批次，用于精确退回）与 `sms_codes`、`auth_sessions`。其余表（团队、画布、模板、社区等）随对应功能迁移加入。
+
 ## 1. 设计约定
 
 - 主键：`uuid`（UUIDv7，按时间有序，利于索引局部性），对外暴露时加类型前缀（如 `tsk_`、`ast_`）。

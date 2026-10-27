@@ -46,6 +46,24 @@
 | 429 | `RATE_LIMITED` | 请求过于频繁 |
 | 503 | `MODEL_UNAVAILABLE` | 所选模型及备选模型均不可用 |
 
+### 1.3 实现状态（Sprint 1）
+
+已实现（`apps/server`，带集成测试）：
+
+| 分组 | 接口 |
+|---|---|
+| 认证 | `POST /auth/sms/send`、`POST /auth/sms/login`、`POST /auth/refresh`、`POST /auth/logout` |
+| 用户 | `GET /me`、`PATCH /me` |
+| 模型 | `GET /models`、`POST /models/route` |
+| 生成 | `POST /generations`、`GET /generations`、`GET /generations/{id}`、`POST /generations/{id}/cancel` |
+| 推送 | `GET /events`（SSE，替代 3.3 节的 WebSocket，见下） |
+| 资产 | `GET /assets`、`GET /assets/{id}`、`PATCH /assets/{id}`、`DELETE /assets/{id}`、`GET /files/{token}`（签名文件） |
+| 积分 | `GET /credits/balance`、`GET /credits/ledger` |
+| 订单 | `POST /orders`、`GET /orders/{id}`、`POST /orders/{id}/mock-pay`（仅 `PAYMENTS_MODE=mock`） |
+| 运维 | `GET /healthz` |
+
+其余接口（写作流式、画布、Agent、模板、社区、团队、支付回调、开放 API）按 [开发计划](./07-roadmap.md) 在后续 Sprint 实现。刷新令牌通过 httpOnly Cookie `crt_rt`（路径 `/v1/auth`）下发，前端不接触。
+
 ## 2. 接口清单
 
 ### 2.1 认证与用户
@@ -198,32 +216,31 @@ Idempotency-Key: 3f1c8a52-6c1e-4f43-9a51-2b7f0c0d9e11
 Content-Type: application/json
 ```
 
-请求体：
+请求体（`params` 字段与 `packages/shared` 的 `GenerationParams` 一致，未知字段会被拒绝）：
 
 ```json
 {
   "modality": "image",
   "operation": "generate",
   "prompt": "秋日午后的咖啡馆窗边，一杯枫糖拿铁，暖色逆光，胶片质感",
-  "negative_prompt": "文字水印, 模糊",
-  "references": [
-    { "asset_id": "ast_01JBX0R8...", "role": "style", "weight": 0.6 }
-  ],
   "params": {
-    "aspect_ratio": "3:4",
+    "ratio": "3:4",
     "resolution": "2k",
-    "count": 4,
-    "seed": null
+    "count": 4
   },
   "routing": { "strategy": "auto", "pinned_model": null },
-  "context": {
-    "project_id": "prj_01JBWZ...",
-    "canvas_id": null,
-    "brand_kit_id": "brd_01JBWQ...",
-    "character_ids": []
-  }
+  "source": "studio"
 }
 ```
+
+| 模态 | 可用参数 |
+|---|---|
+| image | `ratio`、`resolution`（1k / 2k / 4k）、`count`（1–12，工作台界面提供 1–4） |
+| video | `ratio`、`resolution`（720p / 1080p）、`duration`（秒，超过模型上限时自动截断）、`audio`（原生音频，仅支持的模型生效）、`camera` |
+| text | `template`（xhs / script / ad / article / storyboard）、`tone`、`chars`；`operation: "edit"` 时用 `transform`（改写 / 扩写 / 缩写 / 换语气） |
+| audio | 配音：`chars`、`voice`、`seconds`；配乐：`pinned_model: "creature-music"` + `seconds` |
+
+参考图、品牌套件、角色引用（`references`、`context`）将随资产上传与一致性能力一起实现。
 
 响应 `202 Accepted`：
 
@@ -231,7 +248,7 @@ Content-Type: application/json
 {
   "id": "tsk_01JBX3K9Q2M7",
   "status": "queued",
-  "model": { "code": "seedream-4", "display_name": "Seedream 4.0", "tier": "advanced" },
+  "model": { "code": "seedream-4", "name": "Seedream 4.0", "tier": "advanced" },
   "routing_reason": "提示词包含写实光影与产品主体，推荐高级图像模型",
   "estimated_credits": 24,
   "queue": { "name": "p1", "position": 3, "eta_seconds": 18 },
@@ -248,21 +265,22 @@ Content-Type: application/json
   "id": "tsk_01JBX3K9Q2M7",
   "status": "succeeded",
   "progress": 100,
-  "model": { "code": "seedream-4", "display_name": "Seedream 4.0" },
+  "model": { "code": "seedream-4", "name": "Seedream 4.0", "tier": "advanced" },
   "estimated_credits": 24,
   "actual_credits": 24,
   "outputs": [
     {
-      "asset_id": "ast_01JBX3MZ01",
+      "asset_id": "ast_0mvq0qbk1000a0f3c9e1b2d4",
       "kind": "image",
-      "url": "https://cdn.creature.example/a/ast_01JBX3MZ01.webp?sig=...&exp=...",
-      "thumb_url": "https://cdn.creature.example/t/ast_01JBX3MZ01.webp?sig=...",
-      "width": 1536,
-      "height": 2048,
-      "aigc_label": { "explicit": true, "implicit": true, "content_id": "CRT-20261026-8F3K2" }
+      "url": "/v1/files/cHVibGljL3Vzcl8w…?exp=1793073302&sig=y04vTg1_…",
+      "mime": "image/svg+xml",
+      "width": 1152,
+      "height": 1536,
+      "content_id": "CRT-20261027-3FD0DEBA"
     }
   ],
-  "timings": { "queued_ms": 4100, "running_ms": 11800, "post_ms": 900 },
+  "error": null,
+  "source": "studio",
   "created_at": "2026-10-26T08:00:00Z",
   "finished_at": "2026-10-26T08:00:17Z"
 }
@@ -270,20 +288,16 @@ Content-Type: application/json
 
 ### 3.3 任务进度推送
 
-WebSocket：`wss://api.creature.example/v1/ws?token=...`，连接后订阅：
+当前实现为 SSE：`GET /v1/events?access_token=<访问令牌>`（浏览器 EventSource 无法设置请求头，因此令牌放在查询参数中；令牌 2 小时过期，前端刷新后自动重连）。每 25 秒发送一次 `ping` 事件保活。默认事件的 `data` 为：
 
 ```json
-{ "op": "subscribe", "channel": "tasks" }
+{ "type": "task.progress",  "task": { "id": "tsk_…", "status": "running", "progress": 45, "…": "…" } }
+{ "type": "task.succeeded", "task": { "id": "tsk_…", "status": "succeeded", "outputs": [ { "asset_id": "ast_…", "url": "/v1/files/…", "content_id": "CRT-20261027-3FD0DEBA" } ] } }
+{ "type": "task.failed",    "task": { "id": "tsk_…", "status": "failed", "error": { "code": "ALL_MODELS_FAILED", "message": "…已返还 12 积分" } } }
+{ "type": "credits.changed", "credits": { "available": 1776, "frozen": 0, "expiring_soon": 20 } }
 ```
 
-服务端事件：
-
-```json
-{ "type": "task.progress",  "task_id": "tsk_01JBX3K9Q2M7", "status": "running", "progress": 45, "stage": "generating" }
-{ "type": "task.succeeded", "task_id": "tsk_01JBX3K9Q2M7", "outputs": [ { "asset_id": "ast_01JBX3MZ01", "thumb_url": "..." } ] }
-{ "type": "task.failed",    "task_id": "tsk_01JBX3K9Q2M7", "error_code": "VENDOR_TIMEOUT", "refunded_credits": 24 }
-{ "type": "credits.changed", "available": 1776, "frozen": 0 }
-```
+`task` 字段与 `GET /generations/{id}` 的返回结构相同。画布多人协作上线时再引入 WebSocket（Yjs 协作通道）。
 
 ### 3.4 Agent 对话（SSE）
 

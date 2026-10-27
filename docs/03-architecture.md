@@ -112,28 +112,27 @@ flowchart TB
 
 ## 4. 代码仓库结构（Monorepo）
 
+目标结构如下，标注 ✅ 的部分已在 Sprint 1 建立：
+
 ```text
 creature/
 ├── apps/
-│   ├── web/                # 用户端（React + Vite），由 prototype/ 演进而来
+│   ├── web/                # ✅ 用户端（React + Vite），由交互原型演进而来，保留离线演示模式
+│   ├── server/             # ✅ NestJS 模块化单体（API + SSE + 进程内 Worker）
 │   ├── site/               # SEO 页面（Next.js）
 │   ├── admin/              # 管理后台
-│   ├── server/             # NestJS 模块化单体（API + WebSocket）
-│   └── worker/             # Python 生成 Worker
+│   └── worker/             # Python 生成 Worker（接入自部署模型时拆出）
 ├── packages/
+│   ├── shared/             # ✅ 共享类型、模型目录、积分价目、智能路由
 │   ├── ui/                 # 设计令牌与基础组件
 │   ├── sdk/                # 前端 API SDK（由 OpenAPI 生成）
-│   ├── shared/             # 共享类型、常量、积分价目
 │   └── canvas-core/        # 画布数据模型、拓扑排序、校验
-├── infra/
-│   ├── helm/               # K8s 部署
-│   ├── terraform/          # 云资源
-│   └── docker/
-├── docs/                   # 本目录
-└── prototype/              # 交互原型
+├── infra/                  # helm / terraform / docker
+├── .github/workflows/      # ✅ CI：类型检查、测试（PGlite + PostgreSQL）、构建
+└── docs/                   # 本目录
 ```
 
-工具链：pnpm workspace + Turborepo；Python 部分用 uv 管理依赖。
+工具链：当前使用 npm workspaces（包数量少，零额外依赖）；包数量增多后再引入 pnpm + Turborepo 的增量构建与缓存。Python 部分用 uv 管理依赖。
 
 ## 5. 核心模块设计
 
@@ -410,7 +409,7 @@ flowchart LR
 | 认证 | JWT Access Token（2 h）+ Refresh Token（30 d，轮换 + 重用检测）；后台强制 MFA |
 | 授权 | RBAC（平台角色）+ 资源级 ACL（团队 / 画布 / 资产） |
 | 接口防护 | 网关限流（用户 + IP 维度）、WAF、验证码（异常行为触发） |
-| 数据 | 手机号等敏感字段 AES-GCM 加密 + 哈希索引；OSS 私有读，签名 URL 有效期 10 分钟 |
+| 数据 | 手机号等敏感字段 AES-GCM 加密 + 哈希索引；OSS 私有读，签名 URL 有效期可配置（当前默认 2 小时，接入 CDN 后缩短） |
 | 供应商密钥 | 存于云 KMS / Secrets Manager，Worker 运行时注入，不落库 |
 | 支付 | 回调验签、金额与订单二次校验、幂等处理 |
 | 审计 | 后台操作、积分调整、权限变更全部写入审计日志（只追加） |
@@ -429,3 +428,43 @@ flowchart LR
 - **测试**：单元测试（积分计算、路由打分、拓扑排序覆盖率 ≥ 90%）+ 接口集成测试（使用 Mock 供应商）+ 关键路径 E2E（Playwright：登录 → 生成 → 下载 → 支付）。
 - **接口契约**：OpenAPI 3.1 为唯一事实来源，自动生成前端 SDK 与后端 DTO 校验。
 - **特性开关**：新模型、新功能全部经由特性开关灰度发布。
+
+## 10. 当前实现（Sprint 1）
+
+Sprint 1 交付了可运行的后端与接入真实接口的用户端，以下是实现与目标架构的对应关系，以及有意做出的阶段性取舍。
+
+### 10.1 已实现
+
+| 模块 | 位置 | 说明 |
+|---|---|---|
+| 数据访问 | `apps/server/src/db` | 同一套 SQL 运行在 PostgreSQL（`DATABASE_URL`）或内嵌 PGlite 上；启动时按文件顺序执行 `migrations/*.sql` |
+| 账号 | `src/auth` | 验证码登录（60 秒 / 每日 10 次限流，5 次错误失效）；手机号 AES-256-GCM 加密 + HMAC 索引；访问令牌 2 小时，刷新令牌放 httpOnly Cookie，轮换并检测重用（重用时吊销整个令牌族），每人最多 5 个会话 |
+| 积分账务 | `src/credits` | 批次 + 冻结明细 + 只追加流水，见 5.3；加锁顺序固定为"先账户、后批次"；`reconcile()` 四方对账 |
+| 模型网关 | `src/gateway` | 统一请求、路由、最多 3 个候选模型依次尝试、5 分钟窗口成功率低于 85% 熔断 5 分钟；按模态设置超时 |
+| 生成任务 | `src/generations` | 幂等创建（`Idempotency-Key`，重放返回 200，内容不同返回 409）；按套餐进入 p0/p1/p2 队列；Worker 用 `FOR UPDATE SKIP LOCKED` 认领，每次状态变更都校验尝试次数，防止被回收的旧尝试覆盖结果 |
+| 内容安全 | `src/safety` | 提示词与生成结果两道审核并留痕；显式标识（SVG 角标、WAV 开头提示音、文本末尾提示语）+ 隐式标识（SVG metadata、WAV INFO 块、数据库内容编号） |
+| 文件 | `src/storage`、`src/assets` | 交付文件与原始文件分开存放；签名地址（HMAC，默认 2 小时有效）；响应带 `sandbox` CSP，SVG 无法执行脚本 |
+| 订单 | `src/billing` | 积分包与订阅；年付按月发放；订阅积分可结转一个周期；到期自动降级 |
+| 推送 | `GET /v1/events` | SSE 推送任务进度与积分变化（EventSource 通过查询参数携带访问令牌） |
+| 前端 | `apps/web` | 登录、工作台、画布 Agent、资产、会员积分接入真实接口；`VITE_BACKEND=mock` 时为离线演示 |
+
+### 10.2 阶段性取舍
+
+| 目标架构 | 当前实现 | 何时切换 |
+|---|---|---|
+| Temporal 编排 + Python Worker | 进程内 Worker，以数据库为队列（可多实例并行认领） | 接入自部署 GPU 模型或 Agent 多步执行需要人工确认等待时 |
+| WebSocket | SSE（单向推送已满足需求，实现与代理配置更简单） | 画布多人协作（Yjs）上线时引入 WebSocket |
+| UUIDv7 主键 | 带类型前缀、按时间有序的文本主键 | 无需切换；对外 ID 格式与文档一致 |
+| 生成任务按月分区 | 普通表 + 部分索引 | 日任务量超过百万级时 |
+| 对象存储（OSS） | 本地目录实现，接口与对象存储一致 | 部署到 staging 前 |
+| 第三方内容审核 | 关键词规则（打通流程与留痕） | 公开内测前，必须完成 |
+| 真实模型供应商 | Mock 供应商按提示词确定性地生成 SVG / WAV / 文本文件；`PROVIDER_MODE=live` 时未接入适配器的模型自动停用 | 拿到供应商测试账号后逐家接入 |
+| 短信 / 支付 | 开发模式验证码、模拟支付；生产配置下未接入时拒绝启动 | 上线前 |
+| 画布持久化与协作 | 画布内容保存在页面内存 | Beta |
+
+### 10.3 测试
+
+- `packages/shared`：计价与价目表一致性、路由规则、参数规范化（22 项）。
+- `apps/server`：积分账务（含 60 步随机操作后的对账）、标识、网关降级与熔断，以及覆盖登录、生成全链路、幂等、返还、并发、卡死回收、订单的接口集成测试（38 项）。
+- 同一套后端测试分别在 PGlite 与 PostgreSQL 16 上运行（CI 两个任务）。真实 PostgreSQL 上的并发测试曾暴露出"插入任务（外键 KEY SHARE 锁）后再锁账户（FOR UPDATE）"导致的死锁，已调整为先冻结再插入，并为事务增加死锁重试。
+

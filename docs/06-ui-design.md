@@ -1,7 +1,7 @@
 # 06 · UI 交互设计规范
 
 > 适用范围：Web 用户端、移动 H5；管理后台沿用令牌，组件密度更高
-> 原型实现：[`prototype/`](../prototype/)（令牌定义见 `prototype/src/styles/global.css`）
+> 实现：[`apps/web/`](../apps/web/)（令牌定义见 `apps/web/src/styles/global.css`）
 
 ## 1. 设计原则
 
