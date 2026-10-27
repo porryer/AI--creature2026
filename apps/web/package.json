@@ -1,0 +1,29 @@
+{
+  "name": "@creature/web",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "description": "造物 Creature 用户端（React + Vite），支持离线演示模式与真实 API 模式",
+  "scripts": {
+    "dev": "vite",
+    "dev:api": "VITE_BACKEND=api vite",
+    "build": "tsc --noEmit && VITE_BACKEND=api vite build",
+    "build:demo": "tsc --noEmit && vite build --mode single",
+    "preview": "vite preview",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@creature/shared": "0.1.0",
+    "lucide-react": "^1.58.0",
+    "react": "^19.3.1",
+    "react-dom": "^19.3.1"
+  },
+  "devDependencies": {
+    "@types/react": "^19.3.0",
+    "@types/react-dom": "^19.3.0",
+    "@vitejs/plugin-react": "^6.1.2",
+    "typescript": "^5.9.3",
+    "vite": "^8.3.4",
+    "vite-plugin-singlefile": "^2.3.4"
+  }
+}

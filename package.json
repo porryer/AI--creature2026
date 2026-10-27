@@ -1,0 +1,28 @@
+{
+  "name": "creature",
+  "private": true,
+  "description": "造物 Creature：Agent 驱动的 AI 全模态创作平台",
+  "workspaces": [
+    "packages/*",
+    "apps/*"
+  ],
+  "scripts": {
+    "build:shared": "npm run build -w @creature/shared",
+    "dev": "npm run build:shared && node scripts/dev.mjs",
+    "build": "npm run build:shared && npm run build -w @creature/server && npm run build -w @creature/web",
+    "typecheck": "npm run build:shared && npm run typecheck --workspaces --if-present",
+    "test": "npm run test --workspaces --if-present"
+  },
+  "engines": {
+    "node": ">=22"
+  },
+  "devDependencies": {
+    "@types/jest": "^30.0.0",
+    "jest": "^30.2.0",
+    "ts-jest": "^29.4.15",
+    "typescript": "^5.9.3"
+  },
+  "overrides": {
+    "multer": "2.5.0"
+  }
+}

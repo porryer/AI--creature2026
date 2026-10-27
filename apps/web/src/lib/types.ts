@@ -1,0 +1,121 @@
+import type { Modality, ModelInfo } from '@creature/shared';
+
+export type { Modality, ModelInfo, RoutingStrategy, Tier } from '@creature/shared';
+
+export type TaskStatus = 'queued' | 'running' | 'succeeded' | 'failed' | 'blocked' | 'canceled';
+
+export interface Output {
+  id: string;
+  kind: Modality;
+  prompt: string;
+  ratio: string;
+  variant: number;
+  durationSec?: number;
+  text?: string;
+  /** 接入后端时为签名文件地址；离线模式为空，使用程序化占位图 */
+  url?: string;
+}
+
+export interface Task {
+  id: string;
+  modality: Modality;
+  prompt: string;
+  model: ModelInfo;
+  params: Record<string, string | number | boolean>;
+  status: TaskStatus;
+  progress: number;
+  queuePos: number;
+  credits: number;
+  createdAt: number;
+  outputs: Output[];
+  error?: string;
+  operation?: 'generate' | 'edit';
+  /** 后端返回的路由说明（含自动切换备选模型的说明） */
+  routingReason?: string;
+  source: 'studio' | 'canvas' | 'agent' | 'template';
+  count: number;
+  /** 模拟用：排队时长与生成时长（毫秒） */
+  queueMs: number;
+  runMs: number;
+  failAt?: number;
+}
+
+export interface Asset {
+  id: string;
+  kind: Modality;
+  title: string;
+  prompt: string;
+  ratio: string;
+  variant: number;
+  createdAt: number;
+  model: string;
+  durationSec?: number;
+  favorite?: boolean;
+  folder?: string;
+  text?: string;
+  url?: string;
+  contentId?: string;
+}
+
+export interface LedgerEntry {
+  id: string;
+  time: number;
+  type: 'grant' | 'freeze' | 'settle' | 'unfreeze' | 'refund' | 'expire' | 'adjust';
+  label: string;
+  /** 可用余额变动 */
+  delta: number;
+  /** 冻结余额变动 */
+  frozenDelta?: number;
+  balance: number;
+}
+
+export interface Post {
+  id: string;
+  title: string;
+  prompt: string;
+  author: string;
+  kind: 'image' | 'video';
+  ratio: string;
+  likes: number;
+  remix: number;
+  model: string;
+  tags: string[];
+}
+
+export interface TemplateStep {
+  kind: Modality;
+  title: string;
+  credits: number;
+}
+
+export interface Template {
+  id: string;
+  title: string;
+  desc: string;
+  category: string;
+  kind: 'single' | 'workflow';
+  cover: string;
+  ratio: string;
+  uses: number;
+  rating: number;
+  author: string;
+  official?: boolean;
+  steps: TemplateStep[];
+  prompt: string;
+  modality: Modality;
+}
+
+export interface Notice {
+  id: string;
+  time: number;
+  kind: 'ok' | 'err' | 'info';
+  title: string;
+  body?: string;
+  read?: boolean;
+}
+
+export interface Toast {
+  id: string;
+  kind: 'ok' | 'err' | 'info';
+  text: string;
+}

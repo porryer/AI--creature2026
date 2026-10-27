@@ -1,0 +1,49 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  check:
+    name: 类型检查 · 测试（PGlite）· 构建
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npm run typecheck
+      - run: npm test
+      - run: npm run build
+      - run: npm run build:demo -w @creature/web
+
+  postgres:
+    name: 后端测试（PostgreSQL 16）
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: creature
+          POSTGRES_PASSWORD: creature
+          POSTGRES_DB: creature_test
+        ports: ['5432:5432']
+        options: >-
+          --health-cmd "pg_isready -U creature"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npm test -w @creature/server
+        env:
+          TEST_DATABASE_URL: postgres://creature:creature@localhost:5432/creature_test
