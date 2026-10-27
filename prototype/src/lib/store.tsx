@@ -328,7 +328,13 @@ export function StoreProvider({ children }: { children: ReactNode }) {
     return () => window.clearInterval(timer);
   }, [toast]);
 
+  // 首次加载且为"跟随系统"时不改动根元素，保留宿主页面已设置的主题
+  const themeTouched = useRef(false);
   useEffect(() => {
+    if (!themeTouched.current) {
+      themeTouched.current = true;
+      if (state.theme === 'system') return;
+    }
     const root = document.documentElement;
     if (state.theme === 'system') root.removeAttribute('data-theme');
     else root.setAttribute('data-theme', state.theme);
