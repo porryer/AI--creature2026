@@ -8,7 +8,8 @@ import { useStore } from '../lib/store';
 type Cat = 'all' | 'image' | 'video' | 'audio' | 'text' | 'favorite' | 'characters' | 'brand' | `folder:${string}`;
 
 export function Assets() {
-  const { state, openViewer, removeAssets, toast, setHandoff } = useStore();
+  const { state, openViewer, removeAssets, toast, setHandoff, uploadImage } = useStore();
+  const [uploading, setUploading] = useState(0);
   const [cat, setCat] = useState<Cat>('all');
   const [picked, setPicked] = useState<string[]>([]);
   const [confirmDel, setConfirmDel] = useState(false);
@@ -76,14 +77,23 @@ export function Assets() {
                 </div>
                 <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
                   <input id="asset-search" className="input" style={{ width: 220 }} placeholder="搜索：如“红色背景的猫”" value={q} onChange={(e) => setQ(e.target.value)} aria-label="搜索资产" />
-                  <label className="btn">
-                    <Upload size={15} /> 上传素材
+                  <label className="btn" title="支持 PNG、JPEG、WebP，单个不超过 20 MB" aria-busy={uploading > 0}>
+                    <Upload size={15} /> {uploading > 0 ? `上传中 · ${uploading}` : '上传素材'}
                     <input
                       id="asset-upload"
                       type="file"
-                      accept="image/*,video/*,audio/*"
+                      accept="image/png,image/jpeg,image/webp"
+                      multiple
                       style={{ display: 'none' }}
-                      onChange={(e) => e.target.files?.length && toast('素材已上传，正在进行内容审核', 'info')}
+                      onChange={async (e) => {
+                        const files = Array.from(e.target.files ?? []);
+                        e.target.value = '';
+                        if (!files.length) return;
+                        setUploading((n) => n + files.length);
+                        const done = await Promise.all(files.map((f) => uploadImage(f).finally(() => setUploading((n) => n - 1))));
+                        const ok = done.filter(Boolean).length;
+                        if (ok) toast(`已上传 ${ok} 个素材，审核通过并收录到资产库`);
+                      }}
                     />
                   </label>
                 </div>
@@ -143,7 +153,7 @@ export function Assets() {
                     const on = picked.includes(a.id);
                     return (
                       <div key={a.id} className={`asset ${on ? 'selected' : ''}`}>
-                        <Art prompt={a.prompt} ratio="1:1" variant={a.variant} kind={a.kind} text={a.text} durationSec={a.durationSec} url={a.url} long={360} onClick={() => (picked.length ? toggle(a.id) : openViewer(a))} label={a.title} />
+                        <Art prompt={a.prompt} ratio="1:1" variant={a.variant} kind={a.kind} text={a.text} durationSec={a.durationSec} url={a.url} badge={a.source !== 'uploaded'} long={360} onClick={() => (picked.length ? toggle(a.id) : openViewer(a))} label={a.title} />
                         <button className="check" aria-label={on ? `取消选择 ${a.title}` : `选择 ${a.title}`} aria-pressed={on} onClick={() => toggle(a.id)}>
                           {on && <Check size={13} strokeWidth={3} />}
                         </button>

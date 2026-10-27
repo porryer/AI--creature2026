@@ -33,6 +33,12 @@ export class ModerationService {
     return hits.length ? { verdict: 'block', labels: hits.map((w) => `keyword:${w}`) } : { verdict: 'pass', labels: [] };
   }
 
+  /** 上传素材审核：当前只检查文件名，图像内容审核待接入第三方服务 */
+  checkUpload(u: { filename: string }): Verdict {
+    const r = this.checkText(u.filename);
+    return r.verdict === 'block' ? { verdict: 'block', labels: r.labels.map((l) => `filename:${l}`) } : r;
+  }
+
   checkOutput(out: RawOutput): Verdict {
     if (out.flags?.includes('sensitive')) return { verdict: 'block', labels: ['image:sensitive'] };
     if (out.kind === 'text') return this.checkText(out.text ?? out.data.toString('utf8'));

@@ -21,6 +21,7 @@ export interface AssetRow {
   text_content: string | null;
   content_id: string;
   favorite: boolean;
+  source: 'generated' | 'uploaded';
   created_at: Date;
 }
 
@@ -47,6 +48,7 @@ export class AssetsService {
       favorite: r.favorite,
       model: r.model_name,
       task_id: r.task_id,
+      source: r.source,
       created_at: new Date(r.created_at).toISOString(),
     };
   }

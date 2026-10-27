@@ -71,6 +71,7 @@ export interface TaskDTO {
   actual_credits: number | null;
   queue: { name: string; position: number | null };
   outputs: OutputDTO[];
+  references: ReferenceDTO[];
   error: { code: string; message: string } | null;
   source: 'studio' | 'canvas' | 'agent' | 'template';
   created_at: string;
@@ -92,7 +93,25 @@ export interface AssetDTO {
   favorite: boolean;
   model: string;
   task_id: string | null;
+  /** generated：AI 生成（带 AI 标识）；uploaded：用户上传（不加标识） */
+  source: 'generated' | 'uploaded';
   created_at: string;
+}
+
+export type ReferenceRole = 'style' | 'subject' | 'character' | 'first_frame' | 'last_frame';
+
+export interface ReferenceDTO {
+  asset_id: string;
+  role: ReferenceRole;
+}
+
+export interface UploadTicketDTO {
+  upload_id: string;
+  upload_url: string;
+  method: 'PUT';
+  headers: Record<string, string>;
+  max_bytes: number;
+  expires_at: string;
 }
 
 export interface BalanceDTO {
@@ -133,6 +152,48 @@ export interface OrderDTO {
   status: 'pending' | 'paid' | 'closed';
   created_at: string;
   paid_at: string | null;
+}
+
+export interface CanvasNodeDTO {
+  id: string;
+  kind: Modality;
+  title: string;
+  prompt: string;
+  x: number;
+  y: number;
+  modelCode: string;
+  params: Record<string, string | number | boolean>;
+  count: number;
+  status: string;
+  taskId?: string;
+  /** 节点被修改后，上一次运行的任务（继续展示其产物） */
+  prevTaskId?: string;
+  /** 只在读取时由服务端按任务补全，保存时会被忽略 */
+  outputs?: OutputDTO[];
+}
+
+export interface CanvasDocDTO {
+  nodes: CanvasNodeDTO[];
+  edges: { id: string; from: string; to: string }[];
+  messages: Record<string, unknown>[];
+  viewport?: { x: number; y: number; k: number };
+}
+
+export interface CanvasDTO {
+  id: string;
+  project_id: string;
+  name: string;
+  version: number;
+  updated_at: string;
+  doc: CanvasDocDTO;
+}
+
+export interface ProjectDTO {
+  id: string;
+  name: string;
+  created_at: string;
+  updated_at: string;
+  canvases: { id: string; name: string; node_count: number; updated_at: string }[];
 }
 
 export interface Page<T> {

@@ -1124,7 +1124,7 @@ p {
   height: 100%;
   object-fit: cover;
 }
-.ref-thumb button {
+.ref-thumb .ref-remove {
   position: absolute;
   top: 2px;
   right: 2px;
@@ -1136,6 +1136,28 @@ p {
   place-items: center;
   background: var(--badge-bg);
   color: var(--badge-fg);
+}
+.ref-thumb .ref-role {
+  position: absolute;
+  left: 2px;
+  bottom: 2px;
+  height: 18px;
+  padding: 0 6px;
+  border-radius: 9px;
+  border: 0;
+  font-size: 11px;
+  line-height: 18px;
+  background: var(--badge-bg);
+  color: var(--badge-fg);
+}
+.ref-thumb .ref-busy {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  font-size: 11px;
+  background: color-mix(in srgb, var(--surface) 70%, transparent);
+  color: var(--fg-2);
 }
 .ref-add {
   width: 64px;
@@ -1826,9 +1848,10 @@ table.board tr:last-child td {
 }
 .canvas-title {
   position: absolute;
-  left: 50%;
-  top: 16px;
-  transform: translateX(-50%);
+  left: max(16px, env(safe-area-inset-left, 0px));
+  bottom: 16px;
+  max-width: calc(100% - 240px);
+  overflow: hidden;
   z-index: 4;
   display: flex;
   align-items: center;
@@ -1839,6 +1862,21 @@ table.board tr:last-child td {
   background: var(--surface);
   font-size: 13px;
   white-space: nowrap;
+}
+.canvas-title input {
+  font: inherit;
+  font-weight: 600;
+  color: var(--fg);
+  background: transparent;
+  border: 0;
+  border-radius: 6px;
+  padding: 2px 4px;
+  min-width: 4em;
+}
+.canvas-title input:hover,
+.canvas-title input:focus {
+  background: var(--raised);
+  outline: none;
 }
 .agent {
   display: flex;
@@ -2335,6 +2373,36 @@ table.board tr:last-child td {
   display: flex;
   flex-direction: column;
   gap: 8px;
+}
+.proj-open {
+  display: flex;
+  flex-direction: column;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: inherit;
+  text-align: left;
+  font: inherit;
+}
+.proj-del {
+  position: absolute;
+  top: 8px;
+  right: 8px;
+  width: 30px;
+  height: 30px;
+  background: var(--badge-bg);
+  color: var(--badge-fg);
+  opacity: 0;
+  transition: opacity 0.15s var(--ease);
+}
+.proj-card:hover .proj-del,
+.proj-del:focus-visible {
+  opacity: 1;
+}
+@media (hover: none) {
+  .proj-del {
+    opacity: 1;
+  }
 }
 .avatars {
   display: flex;

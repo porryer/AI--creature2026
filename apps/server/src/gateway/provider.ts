@@ -1,4 +1,4 @@
-import type { GenerationParams, Modality, ModelInfo, Operation } from '@creature/shared';
+import type { GenerationParams, Modality, ModelInfo, Operation, ReferenceRole } from '@creature/shared';
 import type { RawOutput } from '../safety/labeling.service';
 
 /** 统一生成请求（docs/03-architecture.md 5.1） */
@@ -9,9 +9,19 @@ export interface AdapterRequest {
   operation: Operation;
   prompt: string;
   params: GenerationParams;
+  /** 参考图（已读取的文件内容） */
+  references: ReferenceInput[];
   /** 在候选模型列表中的序号，0 为主模型 */
   candidateIndex: number;
   signal: AbortSignal;
+}
+
+export interface ReferenceInput {
+  role: ReferenceRole;
+  mime: string;
+  data: Buffer;
+  width?: number;
+  height?: number;
 }
 
 export interface AdapterResult {

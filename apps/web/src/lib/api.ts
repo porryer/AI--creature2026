@@ -1,4 +1,22 @@
-import type { ApiErrorBody, AssetDTO, BalanceDTO, GenerationParams, LedgerEntryDTO, MeDTO, Modality, OrderDTO, Page, RoutingStrategy, ServerEvent, TaskDTO } from '@creature/shared';
+import type {
+  ApiErrorBody,
+  AssetDTO,
+  BalanceDTO,
+  CanvasDocDTO,
+  CanvasDTO,
+  GenerationParams,
+  LedgerEntryDTO,
+  MeDTO,
+  Modality,
+  OrderDTO,
+  Page,
+  ProjectDTO,
+  ReferenceDTO,
+  RoutingStrategy,
+  ServerEvent,
+  TaskDTO,
+  UploadTicketDTO,
+} from '@creature/shared';
 
 /** api：连接后端；mock：本地模拟数据的离线演示 */
 export const BACKEND: 'api' | 'mock' = import.meta.env.VITE_BACKEND === 'api' ? 'api' : 'mock';
@@ -84,6 +102,7 @@ export interface CreateGenerationBody {
   params: GenerationParams;
   routing: { strategy: RoutingStrategy; pinned_model?: string | null };
   source?: TaskDTO['source'];
+  references?: ReferenceDTO[];
 }
 
 export const api = {
@@ -108,6 +127,24 @@ export const api = {
   deleteAsset: (id: string) => call<void>('DELETE', `/assets/${id}`),
   createOrder: (body: { item_type: 'subscription'; item_ref: string; cycle: 'month' | 'year' } | { item_type: 'credit_pack'; item_ref: string }) => call<OrderDTO>('POST', '/orders', body),
   mockPay: (id: string) => call<OrderDTO>('POST', `/orders/${id}/mock-pay`, {}),
+
+  /** 上传图片：创建会话 → PUT 到签名地址 → 完成（审核通过后返回资产） */
+  async uploadImage(file: File): Promise<AssetDTO> {
+    const ticket = await call<UploadTicketDTO>('POST', '/assets/uploads', { filename: file.name, mime: file.type, size: file.size });
+    const put = await fetch(ticket.upload_url, { method: 'PUT', headers: ticket.headers, body: file });
+    if (!put.ok) {
+      const err = ((await put.json().catch(() => null)) as ApiErrorBody | null)?.error;
+      throw new ApiError(put.status, err?.code ?? `HTTP_${put.status}`, err?.message ?? '上传失败，请重试');
+    }
+    return call<AssetDTO>('POST', `/assets/uploads/${ticket.upload_id}/complete`, {});
+  },
+
+  projects: () => call<{ data: ProjectDTO[] }>('GET', '/projects'),
+  createProject: (name: string, doc?: CanvasDocDTO) => call<CanvasDTO>('POST', '/projects', { name, doc }),
+  deleteProject: (id: string) => call<void>('DELETE', `/projects/${id}`),
+  latestCanvas: () => call<CanvasDTO>('GET', '/canvases/latest'),
+  canvas: (id: string) => call<CanvasDTO>('GET', `/canvases/${id}`),
+  saveCanvas: (id: string, body: { doc: CanvasDocDTO; version: number; name?: string }) => call<{ version: number; updated_at: string }>('PUT', `/canvases/${id}`, body),
 };
 
 /**

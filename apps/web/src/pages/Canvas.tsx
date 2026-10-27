@@ -2,10 +2,10 @@ import { AudioLines, Bot, Image as ImageIcon, Maximize, Minus, PenLine, Play, Pl
 import { useCallback, useEffect, useMemo, useRef, useState, type PointerEvent as RPointerEvent } from 'react';
 import { Art } from '../components/Art';
 import { Status } from '../components/ui';
-import { BACKEND } from '../lib/api';
+import { api, ApiError, BACKEND } from '../lib/api';
 import { TEMPLATES } from '../lib/mock';
-import { estimateCredits, modelByCode, routeModel } from '@creature/shared';
-import { uid, useStore } from '../lib/store';
+import { estimateCredits, modelByCode, routeModel, type CanvasDocDTO, type CanvasDTO, type CanvasNodeDTO } from '@creature/shared';
+import { errorText, outputFromDTO, uid, useStore } from '../lib/store';
 import type { Modality, Output, Task, TaskStatus } from '../lib/types';
 
 type NodeStatus = 'draft' | 'waiting' | 'stale' | TaskStatus;
@@ -22,6 +22,8 @@ interface CNode {
   count: number;
   status: NodeStatus;
   taskId?: string;
+  /** 修改后尚未重跑时，上一次运行的任务（用于刷新后继续展示旧产物） */
+  prevTaskId?: string;
   outputs?: Output[];
 }
 
@@ -70,6 +72,46 @@ const KIND_META: Record<Modality, { label: string; icon: typeof ImageIcon; color
 };
 
 const BASE_PROMPT = '山野咖啡秋季新品枫糖拿铁，暖色逆光，胶片质感，落叶';
+const GREETING: Msg = { id: 'm0', role: 'assistant', text: '你好，我是小造。告诉我你要做的内容，我会先给出执行计划和积分预估，你确认后再开始生成。' };
+
+type SyncState = 'loading' | 'saved' | 'saving' | 'error' | 'offline';
+const SYNC_TEXT: Record<SyncState, string> = { loading: '加载中…', saved: '已自动保存', saving: '保存中…', error: '保存失败，稍后重试', offline: '未连接服务器，修改不会保存' };
+
+function nodeFromDTO(n: CanvasNodeDTO): CNode {
+  const { outputs, ...rest } = n;
+  return {
+    ...rest,
+    status: (rest.status === 'waiting' ? 'draft' : rest.status) as NodeStatus,
+    outputs: outputs?.map((o, i) => outputFromDTO(o, i, n.prompt, n.params.ratio)),
+  };
+}
+
+/** 保存时的节点状态：还没提交出去的节点存为草稿，避免刷新后被自动重新提交 */
+function savedStatus(n: CNode): string {
+  if (n.status === 'waiting') return 'draft';
+  if (!n.taskId && (n.status === 'queued' || n.status === 'running')) return 'draft';
+  return n.status;
+}
+
+interface DocInput {
+  liveNodes: (CNode & { progress?: number })[];
+  edges: CEdge[];
+  msgs: Msg[];
+  view: { x: number; y: number; k: number };
+  title: string;
+}
+
+/** 生成要保存的画布文档；key 用于判断内容是否有变化（产物地址与进度不保存） */
+function buildDoc(cur: DocInput): { name: string; doc: CanvasDocDTO; key: string } {
+  const name = cur.title.trim().slice(0, 60) || '未命名画布';
+  const doc: CanvasDocDTO = {
+    nodes: cur.liveNodes.map(({ outputs: _o, progress: _p, ...n }) => ({ ...n, status: savedStatus(n) })),
+    edges: cur.edges,
+    messages: cur.msgs.filter((m) => !m.typing).slice(-300) as unknown as Record<string, unknown>[],
+    viewport: cur.view,
+  };
+  return { name, doc, key: JSON.stringify([name, doc]) };
+}
 
 function seedOutputs(id: string, kind: Modality, prompt: string, count: number, ratio: string, durationSec?: number): Output[] {
   return Array.from({ length: count }, (_, i) => ({ id: `${id}_o${i}`, kind, prompt, ratio, variant: i, durationSec }));
@@ -198,14 +240,16 @@ function templateNodes(templateId: string): { nodes: CNode[]; edges: CEdge[]; ti
 
 export function Canvas() {
   const { state, submit, setHandoff, toast } = useStore();
-  // 离线演示模式展示示例项目；接入后端时从空画布开始（画布持久化在 Beta 版本实现）
+  // 离线演示模式展示示例项目（不保存）；接入后端时读取并自动保存到服务端
   const demo = BACKEND === 'mock';
+  const persist = BACKEND === 'api';
   const [nodes, setNodes] = useState<CNode[]>(demo ? INITIAL_NODES : []);
   const [edges, setEdges] = useState<CEdge[]>(demo ? INITIAL_EDGES : []);
   const [title, setTitle] = useState(demo ? '山野咖啡 · 秋季上新' : '未命名画布');
   const [selected, setSelected] = useState<string | null>(null);
   const [view, setView] = useState({ x: 40, y: 90, k: 0.9 });
-  const [msgs, setMsgs] = useState<Msg[]>(demo ? INITIAL_MSGS : [{ id: 'm0', role: 'assistant', text: '你好，我是小造。告诉我你要做的内容，我会先给出执行计划和积分预估，你确认后再开始生成。' }]);
+  const [msgs, setMsgs] = useState<Msg[]>(demo ? INITIAL_MSGS : [GREETING]);
+  const [sync, setSync] = useState<SyncState>(persist ? 'loading' : 'saved');
   const [input, setInput] = useState('');
   const [agentOpen, setAgentOpen] = useState(false);
   const [panning, setPanning] = useState(false);
@@ -227,6 +271,126 @@ export function Canvas() {
     [nodes, taskMap],
   );
   const byId = useMemo(() => new Map(liveNodes.map((n) => [n.id, n])), [liveNodes]);
+
+  // ---------- 持久化（api 模式）：读取、防抖自动保存、版本冲突处理 ----------
+  const canvasRef = useRef<{ id: string; version: number } | null>(null);
+  const lastSaved = useRef('');
+  const saving = useRef(false);
+  const again = useRef(false);
+  const saveTimer = useRef(0);
+  const latest = useRef({ liveNodes, edges, msgs, view, title });
+  latest.current = { liveNodes, edges, msgs, view, title };
+
+  const applyCanvas = useCallback((c: CanvasDTO) => {
+    canvasRef.current = { id: c.id, version: c.version };
+    const ns = c.doc.nodes.map(nodeFromDTO);
+    const loaded = (c.doc.messages as unknown as Msg[]).filter((m) => !m.typing);
+    const ms = loaded.length ? loaded : [GREETING];
+    const v = c.doc.viewport ?? latest.current.view;
+    setNodes(ns);
+    setEdges(c.doc.edges);
+    setTitle(c.name);
+    setMsgs(ms);
+    setView(v);
+    setSelected(null);
+    // 记下服务端版本对应的内容，未修改时不重复保存
+    lastSaved.current = buildDoc({ liveNodes: ns.map((n) => ({ ...n, progress: 0 })), edges: c.doc.edges, msgs: ms, view: v, title: c.name }).key;
+    setSync('saved');
+  }, []);
+
+  const flush = useRef<() => Promise<void>>(async () => undefined);
+  flush.current = async () => {
+    const c = canvasRef.current;
+    if (!c) return;
+    if (saving.current) {
+      again.current = true;
+      return;
+    }
+    const { name, doc, key } = buildDoc(latest.current);
+    if (key === lastSaved.current) return setSync('saved');
+    saving.current = true;
+    setSync('saving');
+    try {
+      const r = await api.saveCanvas(c.id, { doc, version: c.version, name });
+      if (canvasRef.current === c) {
+        c.version = r.version;
+        lastSaved.current = key;
+        setSync('saved');
+      }
+    } catch (e) {
+      if (e instanceof ApiError && e.code === 'CANVAS_VERSION_CONFLICT') {
+        toast('画布已在其他窗口修改，已载入最新版本', 'info');
+        again.current = false;
+        await api.canvas(c.id).then(applyCanvas, () => setSync('error'));
+      } else if (e instanceof ApiError && e.status < 500) {
+        // 内容过大、校验失败等：重试也不会成功，提示后等下一次修改再保存
+        setSync('error');
+        toast(errorText(e), 'err');
+      } else {
+        setSync('error');
+        window.clearTimeout(saveTimer.current);
+        saveTimer.current = window.setTimeout(() => void flush.current(), 5000);
+      }
+    } finally {
+      saving.current = false;
+      if (again.current) {
+        again.current = false;
+        void flush.current();
+      }
+    }
+  };
+
+  // 打开画布：项目页指定的画布 > 模板 / 小造新建的项目 > 最近编辑的画布 > 新建
+  const started = useRef(false);
+  useEffect(() => {
+    if (!persist || started.current) return;
+    started.current = true;
+    const h = state.handoff?.to === 'canvas' ? state.handoff : null;
+    if (h) setHandoff(null);
+    void (async () => {
+      try {
+        if (h?.canvasId) return applyCanvas(await api.canvas(h.canvasId));
+        const tpl = h?.templateId ? templateNodes(h.templateId) : null;
+        if (tpl) {
+          const total = tpl.nodes.reduce((a, n) => a + estimateCredits(modelByCode(n.modelCode), n.params), 0);
+          const intro: Msg = { id: uid('m'), role: 'assistant', text: `已载入模板「${tpl.title}」，共 ${tpl.nodes.length} 个节点，全部运行预计 ${total} 积分。可以先修改节点提示词，再点击上方“运行全部”。` };
+          return applyCanvas(await api.createProject(tpl.title, { nodes: tpl.nodes.map(({ outputs: _o, ...n }) => n), edges: tpl.edges, messages: [intro as unknown as Record<string, unknown>], viewport: { x: 40, y: 90, k: 0.85 } }));
+        }
+        if (h?.agentPrompt) {
+          applyCanvas(await api.createProject(h.agentPrompt.trim().slice(0, 20) || '未命名画布', { nodes: [], edges: [], messages: [] }));
+          setAgentOpen(true);
+          sendRef.current(h.agentPrompt);
+          return;
+        }
+        try {
+          applyCanvas(await api.latestCanvas());
+        } catch (e) {
+          if (!(e instanceof ApiError && e.status === 404)) throw e;
+          applyCanvas(await api.createProject('未命名画布'));
+        }
+      } catch (e) {
+        setSync('offline');
+        toast(errorText(e), 'err');
+      }
+    })();
+  }, [persist, state.handoff, setHandoff, applyCanvas, toast]);
+
+  // 内容变化后 1 秒保存；离开页面或切到后台时立即保存
+  useEffect(() => {
+    if (!persist || !canvasRef.current) return;
+    window.clearTimeout(saveTimer.current);
+    saveTimer.current = window.setTimeout(() => void flush.current(), 1000);
+  }, [persist, nodes, edges, msgs, title]);
+  useEffect(() => {
+    if (!persist) return;
+    const onHide = () => document.visibilityState === 'hidden' && void flush.current();
+    document.addEventListener('visibilitychange', onHide);
+    return () => {
+      document.removeEventListener('visibilitychange', onHide);
+      window.clearTimeout(saveTimer.current);
+      void flush.current();
+    };
+  }, [persist]);
 
   // 调度：等待中的节点在所有上游完成后提交
   useEffect(() => {
@@ -301,11 +465,14 @@ export function Canvas() {
     [],
   );
 
-  // 消费首页 / 模板带来的任务
+  const sendRef = useRef(send);
+  sendRef.current = send;
+
+  // 离线演示：消费首页 / 模板带来的任务（api 模式在打开画布时处理）
   const consumed = useRef(false);
   useEffect(() => {
     const h = state.handoff;
-    if (consumed.current || !h || h.to !== 'canvas') return;
+    if (persist || consumed.current || !h || h.to !== 'canvas') return;
     consumed.current = true;
     setHandoff(null);
     if (h.templateId) {
@@ -327,7 +494,7 @@ export function Canvas() {
       setAgentOpen(true);
       send(h.agentPrompt);
     }
-  }, [state.handoff, setHandoff, send]);
+  }, [persist, state.handoff, setHandoff, send]);
 
   const removeStep = (planId: string, stepId: string) =>
     setMsgs((ms) =>
@@ -480,8 +647,8 @@ export function Canvas() {
     const down = downstream(id);
     setNodes((ns) =>
       ns.map((n) => {
-        if (n.id === id) return { ...n, prompt, taskId: undefined, status: 'draft', outputs: byId.get(id)?.outputs };
-        if (down.has(n.id) && byId.get(n.id)?.status === 'succeeded') return { ...n, taskId: undefined, status: 'stale', outputs: byId.get(n.id)?.outputs };
+        if (n.id === id) return { ...n, prompt, taskId: undefined, prevTaskId: n.taskId && byId.get(id)?.status === 'succeeded' ? n.taskId : n.prevTaskId, status: 'draft', outputs: byId.get(id)?.outputs };
+        if (down.has(n.id) && byId.get(n.id)?.status === 'succeeded') return { ...n, taskId: undefined, prevTaskId: n.taskId ?? n.prevTaskId, status: 'stale', outputs: byId.get(n.id)?.outputs };
         return n;
       }),
     );
@@ -494,7 +661,7 @@ export function Canvas() {
       toast(`积分不足：需要 ${cost} 积分，当前可用 ${state.available}`, 'err');
       return;
     }
-    setNodes((ns) => ns.map((n) => (targets.has(n.id) ? { ...n, status: 'waiting', taskId: undefined } : n)));
+    setNodes((ns) => ns.map((n) => (targets.has(n.id) ? { ...n, status: 'waiting', taskId: undefined, prevTaskId: n.taskId && byId.get(n.id)?.status === 'succeeded' ? n.taskId : n.prevTaskId, outputs: byId.get(n.id)?.outputs } : n)));
   };
 
   const pending = liveNodes.filter((n) => n.status === 'draft' || n.status === 'stale' || n.status === 'failed');
@@ -536,8 +703,14 @@ export function Canvas() {
           </button>
         </div>
         <div className="canvas-title">
-          <b>{title}</b>
-          <span className="subtle">· {liveNodes.length} 个节点 · 自动保存</span>
+          {persist ? (
+            <input aria-label="画布名称" value={title} maxLength={60} disabled={sync === 'loading' || sync === 'offline'} onChange={(e) => setTitle(e.target.value)} style={{ width: `${Math.min(20, Math.max(4, title.length + 1))}em` }} />
+          ) : (
+            <b>{title}</b>
+          )}
+          <span className="subtle">
+            · {liveNodes.length} 个节点 · {persist ? SYNC_TEXT[sync] : '演示画布不保存'}
+          </span>
         </div>
 
         <div className="canvas-world" style={{ transform: `translate(${view.x}px, ${view.y}px) scale(${view.k})` }}>
@@ -586,6 +759,7 @@ export function Canvas() {
                       className="textarea"
                       style={{ minHeight: 76, fontSize: 12.5 }}
                       aria-label="节点提示词"
+                      maxLength={2000}
                       value={n.prompt}
                       onChange={(e) => editNode(n.id, e.target.value)}
                       onPointerDown={(e) => e.stopPropagation()}
@@ -633,7 +807,7 @@ export function Canvas() {
           })}
         </div>
 
-        {liveNodes.length === 0 && (
+        {liveNodes.length === 0 && sync !== 'loading' && (
           <div style={{ position: 'absolute', inset: 0, display: 'grid', placeItems: 'center', pointerEvents: 'none' }}>
             <div className="empty" style={{ background: 'var(--surface)', maxWidth: 360, pointerEvents: 'auto' }}>
               <Bot size={28} />

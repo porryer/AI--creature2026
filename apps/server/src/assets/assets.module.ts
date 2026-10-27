@@ -1,11 +1,13 @@
-import { Body, Controller, Delete, Get, HttpCode, Module, Param, Patch, Query, Res, UseGuards } from '@nestjs/common';
-import type { Response } from 'express';
+import { Body, Controller, Delete, Get, HttpCode, Module, Param, Patch, Post, Put, Query, Req, Res, UseGuards } from '@nestjs/common';
+import type { Request, Response } from 'express';
 import { z } from 'zod';
 import { AuthGuard } from '../auth/auth.guard';
 import { Errors } from '../common/errors';
 import { pageParams, parse, UserId } from '../common/http';
+import { SafetyModule } from '../safety/safety.module';
 import { StorageService } from '../storage/storage.service';
 import { AssetsService } from './assets.service';
+import { MAX_UPLOAD_BYTES, UPLOAD_MIMES, UploadsService } from './uploads.service';
 
 const ListQuery = z.object({
   kind: z.enum(['image', 'video', 'text', 'audio']).optional(),
@@ -13,6 +15,39 @@ const ListQuery = z.object({
   q: z.string().max(100).optional(),
 });
 const PatchBody = z.object({ favorite: z.boolean().optional(), title: z.string().trim().min(1).max(60).optional() }).strict();
+const UploadBody = z.object({
+  filename: z.string().trim().min(1).max(120),
+  mime: z.enum(UPLOAD_MIMES as [string, ...string[]], { message: '仅支持 PNG、JPEG、WebP 图片' }),
+  size: z.number().int().min(1).max(MAX_UPLOAD_BYTES, '单个文件不能超过 20 MB'),
+});
+
+@Controller()
+export class UploadsController {
+  constructor(private readonly uploads: UploadsService) {}
+
+  /** 第 1 步：创建上传会话，返回签名上传地址 */
+  @Post('assets/uploads')
+  @UseGuards(AuthGuard)
+  create(@UserId() userId: string, @Body() body: unknown) {
+    const b = parse(UploadBody, body);
+    return this.uploads.create(userId, { filename: b.filename, mime: b.mime as (typeof UPLOAD_MIMES)[number], size: b.size });
+  }
+
+  /** 第 2 步：PUT 原始文件（以签名鉴权，与对象存储直传一致） */
+  @Put('uploads/:id')
+  @HttpCode(204)
+  async receive(@Param('id') id: string, @Query('exp') exp: string, @Query('sig') sig: string, @Req() req: Request) {
+    await this.uploads.receive(id, exp, sig, req);
+  }
+
+  /** 第 3 步：完成上传，审核通过后生成资产 */
+  @Post('assets/uploads/:id/complete')
+  @HttpCode(200)
+  @UseGuards(AuthGuard)
+  complete(@UserId() userId: string, @Param('id') id: string) {
+    return this.uploads.complete(userId, id);
+  }
+}
 
 @Controller('assets')
 @UseGuards(AuthGuard)
@@ -61,8 +96,9 @@ export class FilesController {
 }
 
 @Module({
-  controllers: [AssetsController, FilesController],
-  providers: [AssetsService],
+  imports: [SafetyModule],
+  controllers: [UploadsController, AssetsController, FilesController],
+  providers: [AssetsService, UploadsService],
   exports: [AssetsService],
 })
 export class AssetsModule {}

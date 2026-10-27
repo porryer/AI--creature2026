@@ -1,5 +1,5 @@
 import { Inject, Injectable } from '@nestjs/common';
-import { estimateCredits, findModel, normalizeParams, PLANS, TIER_LABEL, type GenerationParams, type Modality, type Operation, type PlanCode, type TaskDTO, type TaskStatus } from '@creature/shared';
+import { estimateCredits, findModel, normalizeParams, PLANS, TIER_LABEL, type GenerationParams, type Modality, type Operation, type PlanCode, type ReferenceDTO, type ReferenceRole, type TaskDTO, type TaskStatus } from '@creature/shared';
 import { createHash } from 'node:crypto';
 import { z } from 'zod';
 import { AssetsService } from '../assets/assets.service';
@@ -20,7 +20,14 @@ export const CreateSchema = z.object({
   params: ParamsSchema.default({}),
   routing: RoutingSchema,
   source: z.enum(['studio', 'canvas', 'agent', 'template']).default('studio'),
+  references: z
+    .array(z.object({ asset_id: z.string().max(64), role: z.enum(['style', 'subject', 'character', 'first_frame', 'last_frame']) }).strict())
+    .max(4, '最多引用 4 张参考图')
+    .default([]),
 });
+
+/** 各模态允许的参考图用途 */
+const REF_ROLES: Record<Modality, ReferenceRole[]> = { image: ['style', 'subject', 'character'], video: ['first_frame', 'last_frame'], text: [], audio: [] };
 
 export interface TaskRow {
   id: string;
@@ -34,6 +41,7 @@ export interface TaskRow {
   routing_reason: string;
   prompt: string;
   params: GenerationParams;
+  input_refs: ReferenceDTO[];
   status: TaskStatus;
   queue: 'p0' | 'p1' | 'p2';
   progress: number;
@@ -93,6 +101,8 @@ export class GenerationsService {
       throw Errors.contentRejected(verdict.labels[0] ?? 'policy');
     }
 
+    await this.checkReferences(userId, body.modality, body.references);
+
     const pinned = body.routing.pinned_model ? this.gateway.resolvePinned(body.routing.pinned_model, body.modality) : null;
     if (body.routing.pinned_model && !pinned) throw Errors.invalid('所选模型不可用或与创作类型不匹配');
     const routed = pinned ? { model: pinned, reason: `已手动指定 ${pinned.name}` } : this.gateway.route(body.modality, body.prompt, body.routing.strategy);
@@ -114,9 +124,26 @@ export class GenerationsService {
         await this.credits.freeze(q, accountId, estimate, id, `冻结 · ${ledgerMemo({ modality: body.modality, params }, model.name)}`);
         await q.query(
           `INSERT INTO generation_tasks (id, user_id, account_id, modality, operation, model_code, routing_strategy, routing_reason, prompt, params,
-             status, queue, estimated_credits, idempotency_key, request_hash, source)
-           VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, 'queued', $11, $12, $13, $14, $15)`,
-          [id, userId, accountId, body.modality, body.operation, model.code, pinned ? 'pinned' : body.routing.strategy, routed.reason, body.prompt, JSON.stringify(params), queue, estimate, idemKey, requestHash, body.source],
+             status, queue, estimated_credits, idempotency_key, request_hash, source, input_refs)
+           VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, 'queued', $11, $12, $13, $14, $15, $16)`,
+          [
+            id,
+            userId,
+            accountId,
+            body.modality,
+            body.operation,
+            model.code,
+            pinned ? 'pinned' : body.routing.strategy,
+            routed.reason,
+            body.prompt,
+            JSON.stringify(params),
+            queue,
+            estimate,
+            idemKey,
+            requestHash,
+            body.source,
+            JSON.stringify(body.references),
+          ],
         );
       });
     } catch (e) {
@@ -133,6 +160,19 @@ export class GenerationsService {
     this.bus.emit(userId, { type: 'task.progress', task });
     await this.credits.notify(accountId);
     return { task, replay: false };
+  }
+
+  /** 参考图只能是本人未删除的图像，且用途要与创作类型匹配（首帧、尾帧各至多一张） */
+  private async checkReferences(userId: string, modality: Modality, refs: ReferenceDTO[]) {
+    if (!refs.length) return;
+    const bad = refs.find((r) => !REF_ROLES[modality].includes(r.role));
+    if (bad) throw Errors.invalid(`${modality === 'video' ? '视频' : modality === 'image' ? '图像' : '该类型'}创作不支持「${bad.role}」用途的参考图`);
+    for (const role of ['first_frame', 'last_frame'] as const) {
+      if (refs.filter((r) => r.role === role).length > 1) throw Errors.invalid(`${role === 'first_frame' ? '首帧' : '尾帧'}只能指定一张`);
+    }
+    const ids = [...new Set(refs.map((r) => r.asset_id))];
+    const rows = await this.db.query<{ id: string }>(`SELECT id FROM assets WHERE id = ANY($1::text[]) AND user_id = $2 AND kind = 'image' AND deleted_at IS NULL`, [ids, userId]);
+    if (rows.length !== ids.length) throw Errors.invalid('参考图不存在或不是图像');
   }
 
   async get(userId: string, id: string): Promise<TaskDTO> {
@@ -201,6 +241,7 @@ export class GenerationsService {
       actual_credits: r.actual_credits,
       queue: { name: r.queue, position },
       outputs: outs,
+      references: r.input_refs ?? [],
       error: r.error_code ? { code: r.error_code, message: r.error_message ?? '' } : null,
       source: r.source as TaskDTO['source'],
       created_at: new Date(r.created_at).toISOString(),

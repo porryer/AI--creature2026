@@ -46,7 +46,7 @@
 | 429 | `RATE_LIMITED` | 请求过于频繁 |
 | 503 | `MODEL_UNAVAILABLE` | 所选模型及备选模型均不可用 |
 
-### 1.3 实现状态（Sprint 1）
+### 1.3 实现状态（Sprint 1–2）
 
 已实现（`apps/server`，带集成测试）：
 
@@ -58,11 +58,13 @@
 | 生成 | `POST /generations`、`GET /generations`、`GET /generations/{id}`、`POST /generations/{id}/cancel` |
 | 推送 | `GET /events`（SSE，替代 3.3 节的 WebSocket，见下） |
 | 资产 | `GET /assets`、`GET /assets/{id}`、`PATCH /assets/{id}`、`DELETE /assets/{id}`、`GET /files/{token}`（签名文件） |
+| 上传 | `POST /assets/uploads`、`PUT /uploads/{id}?exp=&sig=`（签名地址，无需登录态）、`POST /assets/uploads/{id}/complete`，见 3.7 |
+| 项目与画布 | `GET /projects`、`POST /projects`（同时创建画布）、`PATCH /projects/{id}`、`DELETE /projects/{id}`、`GET /canvases/latest`、`GET /canvases/{id}`、`PUT /canvases/{id}`，见 3.8 |
 | 积分 | `GET /credits/balance`、`GET /credits/ledger` |
 | 订单 | `POST /orders`、`GET /orders/{id}`、`POST /orders/{id}/mock-pay`（仅 `PAYMENTS_MODE=mock`） |
 | 运维 | `GET /healthz` |
 
-其余接口（写作流式、画布、Agent、模板、社区、团队、支付回调、开放 API）按 [开发计划](./07-roadmap.md) 在后续 Sprint 实现。刷新令牌通过 httpOnly Cookie `crt_rt`（路径 `/v1/auth`）下发，前端不接触。
+其余接口（写作流式、画布运行与分享、Agent、模板、社区、团队、支付回调、开放 API）按 [开发计划](./07-roadmap.md) 在后续 Sprint 实现。刷新令牌通过 httpOnly Cookie `crt_rt`（路径 `/v1/auth`）下发，前端不接触。
 
 ## 2. 接口清单
 
@@ -240,7 +242,14 @@ Content-Type: application/json
 | text | `template`（xhs / script / ad / article / storyboard）、`tone`、`chars`；`operation: "edit"` 时用 `transform`（改写 / 扩写 / 缩写 / 换语气） |
 | audio | 配音：`chars`、`voice`、`seconds`；配乐：`pinned_model: "creature-music"` + `seconds` |
 
-参考图、品牌套件、角色引用（`references`、`context`）将随资产上传与一致性能力一起实现。
+参考图 `references`：`[{ "asset_id": "ast_…", "role": "subject" }]`，最多 4 张，必须是自己未删除的图像资产（上传或生成的均可）。
+
+| 模态 | 可用 `role` |
+|---|---|
+| image | `style`（取色调与质感）、`subject`（保留商品 / 主体外观）、`character`（保持人物一致） |
+| video | `first_frame`、`last_frame`（各至多 1 张） |
+
+参考图不改变计价；校验失败返回 `400`，不会冻结积分。品牌套件与角色卡引用（`context`）随角色库、品牌套件一起实现。
 
 响应 `202 Accepted`：
 
@@ -385,6 +394,37 @@ data: {"session_status":"awaiting_confirm"}
 ```
 
 前端展示二维码并轮询 `GET /v1/orders/{id}`，或等待 WebSocket `order.paid` 事件。
+
+### 3.7 素材上传
+
+三步完成，客户端协议与 OSS 直传一致（当前签名地址指向 API 自身，切换到 OSS 时只换 `upload_url`）：
+
+1. `POST /v1/assets/uploads` `{ "filename": "新品.png", "mime": "image/png", "size": 482133 }` → `201`
+   `{ "upload_id": "upl_…", "upload_url": "/v1/uploads/upl_…?exp=…&sig=…", "method": "PUT", "headers": { "content-type": "image/png" }, "max_bytes": 482133, "expires_at": "…" }`。
+   支持 PNG / JPEG / WebP，单个 ≤ 20 MB，每人每天 200 次。
+2. `PUT {upload_url}`，请求体为文件内容 → `204`。签名错误或过期 `403`；超过声明大小 `413`；文件头识别出的格式与声明不符 `400`；重复上传 `409 UPLOAD_CLOSED`。
+3. `POST /v1/assets/uploads/{upload_id}/complete` → `200` 返回资产（`source: "uploaded"`，不加 AI 标识）。未上传 `409 UPLOAD_INCOMPLETE`；审核不通过 `422 CONTENT_REJECTED`（留审核记录，不生成资产）；重复调用返回同一资产。
+
+### 3.8 保存画布
+
+`PUT /v1/canvases/cvs_…`
+
+```json
+{
+  "version": 7,
+  "name": "秋季上新物料",
+  "doc": {
+    "nodes": [{ "id": "n1", "kind": "image", "title": "主视觉", "prompt": "…", "x": 40, "y": 60, "modelCode": "seedream-4", "params": { "ratio": "3:4" }, "count": 2, "status": "succeeded", "taskId": "tsk_…" }],
+    "edges": [{ "id": "e1", "from": "n0", "to": "n1" }],
+    "messages": [],
+    "viewport": { "x": 40, "y": 90, "k": 0.9 }
+  }
+}
+```
+
+- 成功返回 `{ "version": 8, "updated_at": "…" }`；`version` 与服务端不一致返回 `409 CANVAS_VERSION_CONFLICT`（`details.current_version`），客户端应重新读取后再保存。
+- 节点的 `outputs` 等未知字段不会保存；`GET` 时服务端按 `taskId` 补全最新状态与签名产物地址。修改过、尚未重跑的节点可带 `prevTaskId`，读取时继续展示上一次的产物。
+- 文档上限 1 MB、500 个节点、2000 条连线、300 条对话；重复节点 ID、连线指向不存在的节点返回 `400`。
 
 ## 4. 开放 API（P2）
 

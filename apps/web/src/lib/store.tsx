@@ -8,13 +8,15 @@ import {
   type AssetDTO,
   type LedgerEntryDTO,
   type MeDTO,
+  type OutputDTO,
+  type ReferenceRole,
   type ServerEvent,
   type TaskDTO,
   type TransformKind,
 } from '@creature/shared';
 import { api, ApiError, BACKEND, refresh, subscribeEvents } from './api';
 import { INITIAL_ASSETS, INITIAL_LEDGER, NOW } from './mock';
-import type { Asset, LedgerEntry, Modality, ModelInfo, Notice, Task, Toast } from './types';
+import type { Asset, LedgerEntry, Modality, ModelInfo, Notice, Output, Task, Toast } from './types';
 
 // 全局状态：积分账户、生成任务、资产、积分流水、通知。
 // mock 模式：任务进度在本地按时间模拟（离线演示）；
@@ -31,6 +33,8 @@ export interface Handoff {
   agentPrompt?: string;
   templateId?: string;
   firstFrame?: Asset;
+  /** 打开指定画布（项目页进入） */
+  canvasId?: string;
 }
 
 export interface Profile {
@@ -101,22 +105,26 @@ export function taskFromDTO(d: TaskDTO): Task {
     queuePos: d.queue.position ?? 0,
     credits: d.actual_credits ?? d.estimated_credits,
     createdAt: Date.parse(d.created_at),
-    outputs: d.outputs.map((o, i) => ({
-      id: o.asset_id,
-      kind: o.kind,
-      prompt: d.prompt,
-      ratio: String(d.params.ratio ?? (o.width && o.height ? `${o.width}:${o.height}` : '1:1')),
-      variant: i,
-      durationSec: o.duration_sec,
-      text: o.text,
-      url: o.url,
-    })),
+    outputs: d.outputs.map((o, i) => outputFromDTO(o, i, d.prompt, d.params.ratio)),
     error: d.error?.message,
     routingReason: d.routing_reason,
     source: d.source,
     count,
     queueMs: 0,
     runMs: 0,
+  };
+}
+
+export function outputFromDTO(o: OutputDTO, i: number, prompt: string, ratio?: unknown): Output {
+  return {
+    id: o.asset_id,
+    kind: o.kind,
+    prompt,
+    ratio: String(ratio ?? (o.width && o.height ? `${o.width}:${o.height}` : '1:1')),
+    variant: i,
+    durationSec: o.duration_sec,
+    text: o.text,
+    url: o.url,
   };
 }
 
@@ -135,6 +143,7 @@ export function assetFromDTO(a: AssetDTO): Asset {
     text: a.text,
     url: a.url,
     contentId: a.content_id,
+    source: a.source,
   };
 }
 
@@ -331,6 +340,8 @@ export interface SubmitSpec {
   count?: number;
   source?: Task['source'];
   operation?: 'generate' | 'edit';
+  /** 参考图（仅接入后端时生效）：资产 ID 与用途 */
+  references?: { assetId: string; role: ReferenceRole }[];
 }
 
 export interface PurchaseItem {
@@ -347,6 +358,8 @@ interface Ctx {
   /** 提交生成任务，返回任务 ID；失败时提示原因并返回 null */
   submit: (spec: SubmitSpec) => Promise<string | null>;
   cancelTask: (id: string) => Promise<void>;
+  /** 上传图片到资产库；离线模式只在本地预览 */
+  uploadImage: (file: File) => Promise<Asset | null>;
   purchase: (item: PurchaseItem) => Promise<boolean>;
   login: (phone: string, code: string) => Promise<void>;
   logout: () => Promise<void>;
@@ -399,7 +412,7 @@ export function StoreProvider({ children }: { children: ReactNode }) {
       if (wasDone) return;
       const quiet = task.source === 'canvas' || task.source === 'agent';
       if (e.type === 'task.succeeded') {
-        dispatch({ type: 'add_assets', assets: e.task.outputs.map((o, i) => ({ ...assetFromDTO({ ...o, id: o.asset_id, title: `${task.prompt.slice(0, 16)}${e.task.outputs.length > 1 ? ` · ${i + 1}` : ''}`, prompt: task.prompt, favorite: false, model: task.model.name, task_id: task.id, created_at: new Date().toISOString() }), ratio: String(task.params.ratio ?? '1:1') })) });
+        dispatch({ type: 'add_assets', assets: e.task.outputs.map((o, i) => ({ ...assetFromDTO({ ...o, id: o.asset_id, title: `${task.prompt.slice(0, 16)}${e.task.outputs.length > 1 ? ` · ${i + 1}` : ''}`, prompt: task.prompt, favorite: false, model: task.model.name, task_id: task.id, source: 'generated', created_at: new Date().toISOString() }), ratio: String(task.params.ratio ?? '1:1') })) });
         if (!quiet) toast(`${KIND_LABEL[task.modality]}生成完成 · 消耗 ${task.credits} 积分`);
         notice('ok', `${KIND_LABEL[task.modality]}生成完成`, `${task.prompt.slice(0, 18)} · ${task.outputs.length} 个结果`);
       } else if (e.type === 'task.failed') {
@@ -448,6 +461,7 @@ export function StoreProvider({ children }: { children: ReactNode }) {
               // 固定使用界面上展示的模型（智能路由已在前端用同一套共享规则算出），保证提交前看到的积分与实际一致
               routing: { strategy: 'auto', pinned_model: spec.model.code },
               source: spec.source ?? 'studio',
+              references: spec.references?.map((r) => ({ asset_id: r.assetId, role: r.role })),
             },
             uid('idem-'),
           );
@@ -590,6 +604,29 @@ export function StoreProvider({ children }: { children: ReactNode }) {
         dispatch({ type: 'finish_task', id, ok: false, outputs: [], assets: [], error: '已取消' });
         dispatch({ type: 'patch_task', id, patch: { status: 'canceled' } });
         toast('已取消，积分已返还');
+      },
+      async uploadImage(file) {
+        if (!/^image\/(png|jpeg|webp)$/.test(file.type)) {
+          toast('仅支持 PNG、JPEG、WebP 图片', 'err');
+          return null;
+        }
+        if (file.size > 20 * 1024 * 1024) {
+          toast('单个文件不能超过 20 MB', 'err');
+          return null;
+        }
+        if (BACKEND === 'mock') {
+          const asset: Asset = { id: uid('upl_'), kind: 'image', title: file.name.replace(/\.[a-z0-9]+$/i, ''), prompt: '', ratio: '1:1', variant: 0, createdAt: Date.now(), model: '本地上传', url: URL.createObjectURL(file), source: 'uploaded' };
+          dispatch({ type: 'add_assets', assets: [asset] });
+          return asset;
+        }
+        try {
+          const asset = assetFromDTO(await api.uploadImage(file));
+          dispatch({ type: 'add_assets', assets: [asset] });
+          return asset;
+        } catch (e) {
+          toast(errorText(e), 'err');
+          return null;
+        }
       },
       async purchase(item) {
         if (BACKEND === 'mock') {

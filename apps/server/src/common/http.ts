@@ -27,6 +27,10 @@ const STATUS_CODE: Record<number, string> = {
   429: 'RATE_LIMITED',
 };
 
+function isBodyParserError(e: unknown): e is { type: string; status: number } {
+  return typeof e === 'object' && e !== null && typeof (e as { type?: unknown }).type === 'string' && String((e as { type: string }).type).startsWith('entity.');
+}
+
 /** 统一错误响应：{ error: { code, message, details, request_id } } */
 @Catch()
 export class AllExceptionsFilter implements ExceptionFilter {
@@ -46,6 +50,10 @@ export class AllExceptionsFilter implements ExceptionFilter {
     } else if (exception instanceof HttpException) {
       status = exception.getStatus();
       body = { code: STATUS_CODE[status] ?? `HTTP_${status}`, message: status === 404 ? '接口不存在' : exception.message };
+    } else if (isBodyParserError(exception)) {
+      // 请求体过大或 JSON 格式错误（由 body-parser 抛出，不是 HttpException）
+      status = exception.type === 'entity.too.large' ? 413 : 400;
+      body = status === 413 ? { code: 'PAYLOAD_TOO_LARGE', message: '请求内容过大' } : { code: 'INVALID_ARGUMENT', message: '请求体不是有效的 JSON' };
     } else {
       this.logger.error(`[${req.requestId}] ${req.method} ${req.originalUrl}`, exception instanceof Error ? exception.stack : String(exception));
       body = { code: 'INTERNAL', message: '服务器开小差了，请稍后重试' };

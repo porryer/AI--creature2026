@@ -356,15 +356,39 @@ function TaskFeed({ modality, empty, onVariant }: { modality: Modality; empty: R
 
 /* ---------------- 图像 ---------------- */
 
+type ImageRefRole = 'style' | 'subject' | 'character';
+const IMAGE_ROLES: Record<ImageRefRole, string> = { style: '风格', subject: '主体', character: '角色' };
+const nextRole = (r: ImageRefRole): ImageRefRole => (r === 'style' ? 'subject' : r === 'subject' ? 'character' : 'style');
+
+interface ImageRef {
+  key: string;
+  /** 上传完成或从资产库选择后才有 */
+  asset?: Asset;
+  preview?: string;
+  role: ImageRefRole;
+}
+
+/** 参考图缩略图：上传中显示本地预览，完成后显示资产 */
+function RefThumb({ asset, preview, busy, children }: { asset?: Asset; preview?: string; busy?: boolean; children?: ReactNode }) {
+  return (
+    <div className="ref-thumb">
+      {asset ? <Art prompt={asset.prompt} ratio="1:1" variant={asset.variant} url={asset.url} badge={false} long={160} style={{ borderRadius: 0, height: '100%' }} /> : <img src={preview} alt="参考图" />}
+      {busy && <span className="ref-busy">上传中</span>}
+      {children}
+    </div>
+  );
+}
+
 function ImageStudio() {
-  const { submit } = useStore();
+  const { state, submit, uploadImage } = useStore();
   const [prompt, setPrompt] = useState('');
   const [strategy, setStrategy] = useState<RoutingStrategy>('auto');
   const [pinned, setPinned] = useState<string | null>(null);
   const [ratio, setRatio] = useState('3:4');
   const [resolution, setResolution] = useState('2k');
   const [count, setCount] = useState(4);
-  const [refs, setRefs] = useState<{ id: string; url: string; role: string }[]>([]);
+  const [refs, setRefs] = useState<ImageRef[]>([]);
+  const [picking, setPicking] = useState(false);
   const [negative, setNegative] = useState('');
   const [seed, setSeed] = useState('');
   const [brand, setBrand] = useState(false);
@@ -377,21 +401,30 @@ function ImageStudio() {
     if (!p.trim()) return;
     const extra = [brand ? `（品牌套件：${BRAND_KIT.name}）` : '', character ? `（角色：${CHARACTERS.find((c) => c.id === character)?.name}）` : ''].join('');
     // 按本次提交的提示词解析模型：首页带入并自动开始时，渲染中的 model 可能还是旧提示词的结果
-    submit({ modality: 'image', prompt: p.trim() + extra, model: resolveModel('image', p, strategy, pinned).model, params, count });
+    const references = refs.flatMap((r) => (r.asset ? [{ assetId: r.asset.id, role: r.role }] : []));
+    submit({ modality: 'image', prompt: p.trim() + extra, model: resolveModel('image', p, strategy, pinned).model, params, count, references });
   };
+  const uploading = refs.some((r) => !r.asset);
 
   useHandoff('image', (p, auto) => {
     setPrompt(p);
     if (auto && p) window.setTimeout(() => go(p), 50);
   });
 
+  // 上传的参考图同时保存到资产库，提交时只传资产 ID
   const onFiles = (files: FileList | null) => {
     if (!files) return;
-    const next = Array.from(files)
-      .slice(0, 4 - refs.length)
-      .map((f) => ({ id: uid('ref'), url: URL.createObjectURL(f), role: '风格' }));
-    setRefs((r) => [...r, ...next]);
+    for (const file of Array.from(files).slice(0, 4 - refs.length)) {
+      const key = uid('ref');
+      const preview = URL.createObjectURL(file);
+      setRefs((r) => [...r, { key, preview, role: 'style' }]);
+      void uploadImage(file).then((asset) => {
+        URL.revokeObjectURL(preview);
+        setRefs((r) => (asset ? r.map((x) => (x.key === key ? { key, asset, role: x.role } : x)) : r.filter((x) => x.key !== key)));
+      });
+    }
   };
+  const library = state.assets.filter((a) => a.kind === 'image' && !refs.some((r) => r.asset?.id === a.id)).slice(0, 8);
 
   return (
     <Shell
@@ -402,24 +435,52 @@ function ImageStudio() {
           <ModelPicker modality="image" prompt={prompt} strategy={strategy} onStrategy={setStrategy} pinned={pinned} onPinned={setPinned} />
           <div className="field">
             <span className="field-label">
-              参考图 <span className="subtle">{refs.length}/4</span>
+              <span>
+                参考图 <span className="subtle">{refs.length}/4</span>
+              </span>
+              {library.length > 0 && refs.length < 4 && (
+                <button type="button" className="btn ghost sm" style={{ height: 24 }} aria-expanded={picking} onClick={() => setPicking((v) => !v)}>
+                  <LayoutGrid size={13} /> 从资产库选择
+                </button>
+              )}
             </span>
             <div className="ref-row">
               {refs.map((r) => (
-                <div className="ref-thumb" key={r.id}>
-                  <img src={r.url} alt="参考图" />
-                  <button aria-label="移除参考图" onClick={() => setRefs((x) => x.filter((y) => y.id !== r.id))}>
+                <RefThumb key={r.key} asset={r.asset} preview={r.preview} busy={!r.asset}>
+                  <button className="ref-role" title="点击切换用途：风格 / 主体 / 角色" aria-label={`用途：${IMAGE_ROLES[r.role]}，点击切换`} onClick={() => setRefs((x) => x.map((y) => (y.key === r.key ? { ...y, role: nextRole(y.role) } : y)))}>
+                    {IMAGE_ROLES[r.role]}
+                  </button>
+                  <button className="ref-remove" aria-label="移除参考图" onClick={() => setRefs((x) => x.filter((y) => y.key !== r.key))}>
                     <X size={12} />
                   </button>
-                </div>
+                </RefThumb>
               ))}
               {refs.length < 4 && (
                 <label className="ref-add" aria-label="上传参考图">
                   <Upload size={18} />
-                  <input id="img-ref-input" type="file" accept="image/*" multiple onChange={(e) => onFiles(e.target.files)} />
+                  <input id="img-ref-input" type="file" accept="image/png,image/jpeg,image/webp" multiple onChange={(e) => (onFiles(e.target.files), (e.target.value = ''))} />
                 </label>
               )}
             </div>
+            {picking && refs.length < 4 && (
+              <div className="ref-row" role="group" aria-label="从资产库选择参考图">
+                {library.map((a) => (
+                  <button
+                    key={a.id}
+                    className="ref-thumb"
+                    style={{ padding: 0 }}
+                    aria-label={`添加 ${a.title} 为参考图`}
+                    onClick={() => {
+                      setRefs((r) => [...r, { key: uid('ref'), asset: a, role: 'style' }]);
+                      if (refs.length >= 3) setPicking(false);
+                    }}
+                  >
+                    <Art prompt={a.prompt} ratio="1:1" variant={a.variant} url={a.url} badge={false} long={160} style={{ borderRadius: 0, height: '100%' }} />
+                  </button>
+                ))}
+              </div>
+            )}
+            {refs.length > 0 && <span className="subtle" style={{ fontSize: 12 }}>点角标切换用途：风格取色调与质感，主体保留商品外观，角色保持人物一致</span>}
           </div>
           <div className="field">
             <span className="field-label">比例</span>
@@ -476,7 +537,7 @@ function ImageStudio() {
           </details>
         </>
       }
-      submit={<SubmitButton credits={credits} disabled={!prompt.trim()} onClick={() => go()} />}
+      submit={<SubmitButton credits={credits} disabled={!prompt.trim() || uploading} onClick={() => go()} />}
       main={
         <TaskFeed
           modality="image"
@@ -499,7 +560,7 @@ function ImageStudio() {
 const CAMERA = ['固定', '推进', '拉远', '左摇', '右摇', '环绕', '跟随', '升降'];
 
 function VideoStudio() {
-  const { state, submit } = useStore();
+  const { state, submit, uploadImage } = useStore();
   const [prompt, setPrompt] = useState('');
   const [way, setWay] = useState<'t2v' | 'i2v' | 'fl'>('t2v');
   const [strategy, setStrategy] = useState<RoutingStrategy>('auto');
@@ -511,18 +572,34 @@ function VideoStudio() {
   const [strength, setStrength] = useState(50);
   const [audio, setAudio] = useState(false);
   const [frame, setFrame] = useState<Asset | null>(null);
+  const [last, setLast] = useState<Asset | null>(null);
+  const [slot, setSlot] = useState<'first' | 'last'>('first');
+  const [uploading, setUploading] = useState(false);
   const { model } = resolveModel('video', prompt, strategy, pinned);
   const maxD = model.maxDuration ?? 10;
   const d = Math.min(duration, maxD);
   const paramsFor = (m: ModelInfo) => ({ ratio, duration: Math.min(duration, m.maxDuration ?? 10), resolution, audio: audio && !!m.nativeAudio, camera });
   const params = paramsFor(model);
   const credits = estimateCredits(model, params);
-  const images = state.assets.filter((a) => a.kind === 'image').slice(0, 6);
+  // 已选中的帧即使不在最近列表里也要显示（例如从图像结果“转为视频”带过来的）
+  const recent = state.assets.filter((a) => a.kind === 'image').slice(0, 8);
+  const images = [...[frame, last].filter((a): a is Asset => !!a && !recent.some((r) => r.id === a.id)), ...recent];
+  const pick = (a: Asset) => (way === 'fl' && slot === 'last' ? setLast(a) : setFrame(a));
+
+  const onFile = async (file: File | undefined) => {
+    if (!file) return;
+    setUploading(true);
+    const asset = await uploadImage(file);
+    setUploading(false);
+    if (asset) pick(asset);
+  };
 
   const go = (p = prompt) => {
     if (!p.trim()) return;
     const m = resolveModel('video', p, strategy, pinned).model;
-    submit({ modality: 'video', prompt: `${p.trim()}${camera !== '固定' ? `（运镜：${camera}）` : ''}`, model: m, params: paramsFor(m), count: 1 });
+    const references =
+      way === 't2v' || !frame ? [] : [{ assetId: frame.id, role: 'first_frame' as const }, ...(way === 'fl' && last ? [{ assetId: last.id, role: 'last_frame' as const }] : [])];
+    submit({ modality: 'video', prompt: `${p.trim()}${camera !== '固定' ? `（运镜：${camera}）` : ''}`, model: m, params: paramsFor(m), count: 1, references });
   };
 
   useHandoff('video', (p, auto, ff) => {
@@ -552,20 +629,41 @@ function VideoStudio() {
           />
           {way !== 't2v' && (
             <div className="field">
-              <span className="field-label">{way === 'fl' ? '首帧（从资产库选择）' : '参考首帧（从资产库选择）'}</span>
+              <span className="field-label">
+                <span>{way === 'fl' ? '首尾帧（从资产库选择或上传）' : '参考首帧（从资产库选择或上传）'}</span>
+              </span>
+              {way === 'fl' && (
+                <Segmented
+                  label="正在选择"
+                  value={slot}
+                  onChange={setSlot}
+                  options={[
+                    { value: 'first', label: frame ? '首帧 ✓' : '选择首帧' },
+                    { value: 'last', label: last ? '尾帧 ✓' : '选择尾帧（可选）' },
+                  ]}
+                />
+              )}
               <div className="ref-row">
-                {images.map((a) => (
-                  <button
-                    key={a.id}
-                    className="ref-thumb"
-                    style={{ padding: 0, outline: frame?.id === a.id ? '2px solid var(--accent-2)' : undefined, outlineOffset: 2 }}
-                    onClick={() => setFrame(a)}
-                    aria-label={`选择 ${a.title} 作为首帧`}
-                    aria-pressed={frame?.id === a.id}
-                  >
-                    <Art prompt={a.prompt} ratio="1:1" variant={a.variant} url={a.url} badge={false} long={160} style={{ borderRadius: 0, height: '100%' }} />
-                  </button>
-                ))}
+                {images.map((a) => {
+                  const mark = frame?.id === a.id ? '首帧' : way === 'fl' && last?.id === a.id ? '尾帧' : '';
+                  return (
+                    <button
+                      key={a.id}
+                      className="ref-thumb"
+                      style={{ padding: 0, outline: mark ? '2px solid var(--accent-2)' : undefined, outlineOffset: 2 }}
+                      onClick={() => pick(a)}
+                      aria-label={`选择 ${a.title} 作为${way === 'fl' && slot === 'last' ? '尾帧' : '首帧'}`}
+                      aria-pressed={!!mark}
+                    >
+                      <Art prompt={a.prompt} ratio="1:1" variant={a.variant} url={a.url} badge={false} long={160} style={{ borderRadius: 0, height: '100%' }} />
+                      {mark && <span className="ref-role">{mark}</span>}
+                    </button>
+                  );
+                })}
+                <label className="ref-add" aria-label="上传图片作为帧" aria-busy={uploading}>
+                  {uploading ? <span style={{ fontSize: 11 }}>上传中</span> : <Upload size={18} />}
+                  <input id="vid-frame-input" type="file" accept="image/png,image/jpeg,image/webp" disabled={uploading} onChange={(e) => (void onFile(e.target.files?.[0]), (e.target.value = ''))} />
+                </label>
               </div>
             </div>
           )}
@@ -614,7 +712,7 @@ function VideoStudio() {
           </div>
         </>
       }
-      submit={<SubmitButton credits={credits} disabled={!prompt.trim() || (way !== 't2v' && !frame)} onClick={() => go()} />}
+      submit={<SubmitButton credits={credits} disabled={!prompt.trim() || uploading || (way !== 't2v' && !frame)} onClick={() => go()} />}
       main={
         <>
           <div className="example-note">

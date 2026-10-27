@@ -1,7 +1,7 @@
 import { Inject, Injectable } from '@nestjs/common';
 import { createHmac, timingSafeEqual } from 'node:crypto';
 import { createReadStream, existsSync } from 'node:fs';
-import { mkdir, writeFile } from 'node:fs/promises';
+import { copyFile, mkdir, readFile, writeFile } from 'node:fs/promises';
 import { dirname, join, resolve } from 'node:path';
 import type { Readable } from 'node:stream';
 import { AppConfig, CONFIG } from '../config';
@@ -9,6 +9,7 @@ import { AppConfig, CONFIG } from '../config';
 const MIME_EXT: Record<string, string> = {
   'image/svg+xml': 'svg',
   'image/png': 'png',
+  'image/jpeg': 'jpg',
   'image/webp': 'webp',
   'video/mp4': 'mp4',
   'audio/wav': 'wav',
@@ -37,6 +38,30 @@ export class StorageService {
     const path = this.pathOf(key);
     await mkdir(dirname(path), { recursive: true });
     await writeFile(path, data);
+  }
+
+  async read(key: string): Promise<Buffer> {
+    return readFile(this.pathOf(key));
+  }
+
+  async copy(from: string, to: string): Promise<void> {
+    const dst = this.pathOf(to);
+    await mkdir(dirname(dst), { recursive: true });
+    await copyFile(this.pathOf(from), dst);
+  }
+
+  /** 上传地址：/v1/uploads/{id}?exp=&sig=，客户端用 PUT 直接上传文件（对象存储的预签名上传同理） */
+  signedUploadUrl(uploadId: string, expiresAt: Date): string {
+    const exp = Math.floor(expiresAt.getTime() / 1000);
+    return `${this.config.publicBaseUrl}/v1/uploads/${uploadId}?exp=${exp}&sig=${this.sign(`upload:${uploadId}`, exp)}`;
+  }
+
+  verifyUpload(uploadId: string, exp: string, sig: string): boolean {
+    const expNum = Number(exp);
+    if (!Number.isInteger(expNum) || expNum < Math.floor(Date.now() / 1000)) return false;
+    const expected = Buffer.from(this.sign(`upload:${uploadId}`, expNum));
+    const given = Buffer.from(String(sig));
+    return expected.length === given.length && timingSafeEqual(expected, given);
   }
 
   /** 生成限时访问地址：/v1/files/{base64url(key)}?exp=&sig= */

@@ -5,6 +5,7 @@ import cookieParser from 'cookie-parser';
 import { AssetsModule } from './assets/assets.module';
 import { AuthModule } from './auth/auth.module';
 import { BillingModule } from './billing/billing.module';
+import { CanvasesModule } from './canvases/canvases.module';
 import { AllExceptionsFilter, requestIdMiddleware } from './common/http';
 import { AppConfig, CONFIG, loadConfig } from './config';
 import { CoreModule } from './core.module';
@@ -36,7 +37,7 @@ export class AppModule {
   static forRoot(config: AppConfig): DynamicModule {
     return {
       module: AppModule,
-      imports: [CoreModule.forRoot(config), AuthModule, CreditsModule, UsersModule, GatewayModule, AssetsModule, GenerationsModule, BillingModule],
+      imports: [CoreModule.forRoot(config), AuthModule, CreditsModule, UsersModule, GatewayModule, AssetsModule, GenerationsModule, BillingModule, CanvasesModule],
       controllers: [HealthController],
       providers: [JobsService],
     };
@@ -54,7 +55,8 @@ export async function createApp(config: AppConfig = loadConfig()): Promise<INest
   app.set('trust proxy', 1);
   app.use(requestIdMiddleware);
   app.use(cookieParser());
-  app.useBodyParser('json', { limit: '256kb' });
+  // 画布文档可能较大（上限 1 MB，见 CanvasesService）；图片上传走签名 PUT，不经过 JSON 解析
+  app.useBodyParser('json', { limit: '1100kb' });
   app.enableCors({ origin: config.corsOrigins, credentials: true, exposedHeaders: ['X-Request-Id'] });
   app.useGlobalFilters(new AllExceptionsFilter());
   app.enableShutdownHooks();

@@ -55,6 +55,8 @@ export interface Asset {
   text?: string;
   url?: string;
   contentId?: string;
+  /** uploaded：用户上传（不带 AI 标识） */
+  source?: 'generated' | 'uploaded';
 }
 
 export interface LedgerEntry {

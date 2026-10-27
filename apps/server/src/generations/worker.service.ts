@@ -6,6 +6,7 @@ import { CreditsService } from '../credits/credits.service';
 import { Db, DB } from '../db/db';
 import { EventBus } from '../events/event-bus';
 import { GatewayError, ModelGateway } from '../gateway/model-gateway.service';
+import type { ReferenceInput } from '../gateway/provider';
 import { LabelingService, type LabeledOutput, type RawOutput } from '../safety/labeling.service';
 import { ModerationService } from '../safety/moderation.service';
 import { StorageService } from '../storage/storage.service';
@@ -84,7 +85,8 @@ export class GenerationWorker implements OnApplicationBootstrap, OnApplicationSh
         last = pct;
         chain = chain.then(() => this.setProgress(task, pct)).catch(() => undefined);
       };
-      const result = await this.gateway.generate(primary, { taskId: task.id, modality: task.modality, operation: task.operation, prompt: task.prompt, params: task.params }, onProgress);
+      const references = await this.loadReferences(task);
+      const result = await this.gateway.generate(primary, { taskId: task.id, modality: task.modality, operation: task.operation, prompt: task.prompt, params: task.params, references }, onProgress);
       await chain;
 
       // 只有当前这次尝试仍持有任务时才继续（任务可能已被超时回收并重新排队）
@@ -135,6 +137,24 @@ export class GenerationWorker implements OnApplicationBootstrap, OnApplicationSh
       if (!(e instanceof GatewayError)) this.logger.error(`[${task.id}] 处理失败`, e instanceof Error ? e.stack : String(e));
       await this.fail(task, 'failed', code, `${message}，已返还 ${task.estimated_credits} 积分`);
     }
+  }
+
+  /** 读取参考图：生成的作品用内部原始文件（不带角标），上传的素材即原图 */
+  private async loadReferences(task: TaskRow): Promise<ReferenceInput[]> {
+    const refs = task.input_refs ?? [];
+    if (!refs.length) return [];
+    const rows = await this.db.query<{ id: string; mime_type: string; storage_key: string; raw_storage_key: string | null; width: number | null; height: number | null }>(
+      'SELECT id, mime_type, storage_key, raw_storage_key, width, height FROM assets WHERE id = ANY($1::text[]) AND user_id = $2',
+      [refs.map((r) => r.asset_id), task.user_id],
+    );
+    const byId = new Map(rows.map((r) => [r.id, r]));
+    const out: ReferenceInput[] = [];
+    for (const r of refs) {
+      const a = byId.get(r.asset_id);
+      if (!a) continue;
+      out.push({ role: r.role, mime: a.mime_type, data: await this.storage.read(a.raw_storage_key ?? a.storage_key), width: a.width ?? undefined, height: a.height ?? undefined });
+    }
+    return out;
   }
 
   private async insertAsset(q: { query: Db['query'] }, task: TaskRow, id: string, out: LabeledOutput, raw: RawOutput, modelName: string, i: number, n: number) {

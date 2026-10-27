@@ -41,7 +41,7 @@ describe('AI 生成内容标识', () => {
 
 describe('模型网关', () => {
   const gw = () => new ModelGateway(config, [new MockProvider({ image: 0, video: 0, text: 0, audio: 0 })]);
-  const req = (prompt: string, modality: 'image' | 'audio' = 'image') => ({ taskId: 'tsk_x', modality, operation: 'generate' as const, prompt, params: { count: 1 } });
+  const req = (prompt: string, modality: 'image' | 'audio' = 'image') => ({ taskId: 'tsk_x', modality, operation: 'generate' as const, prompt, params: { count: 1 }, references: [] });
 
   it('主模型超时后切换备选模型', async () => {
     const r = await gw().generate(model('seedream-4'), req('超时 测试'), () => undefined);
