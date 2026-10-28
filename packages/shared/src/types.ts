@@ -318,6 +318,22 @@ export interface AdminUserDetailDTO extends AdminUserDTO {
   audit: { action: string; actor_nickname: string; detail: Record<string, unknown>; created_at: string }[];
 }
 
+/** 全量对账记录：余额 / 流水 / 批次 / 冻结明细四方核对，以及已结束任务的残留冻结 */
+export interface ReconcileRunDTO {
+  id: string;
+  trigger: 'schedule' | 'manual';
+  triggered_by: string | null;
+  started_at: string;
+  finished_at: string | null;
+  accounts: number;
+  mismatches: number;
+  stale_holds: number;
+  details: {
+    accounts?: { account_id: string; owner_id: string; available: number; frozen: number; ledger_available: number; ledger_frozen: number; grants_remaining: number; holds: number }[];
+    holds?: { task_id: string; status: string; amount: number }[];
+  };
+}
+
 export interface ReviewItemDTO {
   post: PostDTO;
   /** reviewing：发布时机审存疑；reported：被举报 */

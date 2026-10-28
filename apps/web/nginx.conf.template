@@ -1,0 +1,48 @@
+# 用户端静态文件 + /v1 反向代理。${API_UPSTREAM} 在容器启动时替换
+server {
+  listen 80;
+  server_name _;
+  root /usr/share/nginx/html;
+
+  # 素材上传走 PUT /v1/uploads/{id}，单个文件上限 20 MB
+  client_max_body_size 21m;
+  server_tokens off;
+
+  add_header X-Content-Type-Options nosniff always;
+  add_header X-Frame-Options DENY always;
+  add_header Referrer-Policy strict-origin-when-cross-origin always;
+
+  location = /healthz {
+    access_log off;
+    return 200 "ok\n";
+  }
+
+  location /v1/ {
+    proxy_pass ${API_UPSTREAM};
+    proxy_http_version 1.1;
+    proxy_set_header Host $host;
+    proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+    proxy_set_header X-Forwarded-Proto $scheme;
+    proxy_set_header X-Request-Id $request_id;
+    proxy_set_header Connection "";
+    # 服务端推送（SSE）不能缓冲，连接可长时间保持
+    proxy_buffering off;
+    proxy_read_timeout 1h;
+  }
+
+  # 带哈希的构建产物长期缓存
+  location /assets/ {
+    expires 1y;
+    add_header Cache-Control "public, immutable";
+    add_header X-Content-Type-Options nosniff always;
+    try_files $uri =404;
+  }
+
+  # 单页应用：路由在前端（hash），index.html 不缓存
+  location / {
+    add_header Cache-Control "no-cache";
+    add_header X-Content-Type-Options nosniff always;
+    add_header X-Frame-Options DENY always;
+    try_files $uri /index.html;
+  }
+}

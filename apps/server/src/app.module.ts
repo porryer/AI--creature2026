@@ -17,6 +17,8 @@ import { GatewayModule } from './gateway/gateway.module';
 import { ModelGateway } from './gateway/model-gateway.service';
 import { GenerationsModule } from './generations/generations.module';
 import { JobsService } from './jobs.service';
+import { MetricsService } from './observability/metrics.service';
+import { httpObservability, ObservabilityModule } from './observability/observability.module';
 import { UsersModule } from './users/users.module';
 
 @Controller('healthz')
@@ -39,7 +41,7 @@ export class AppModule {
   static forRoot(config: AppConfig): DynamicModule {
     return {
       module: AppModule,
-      imports: [CoreModule.forRoot(config), AuthModule, CreditsModule, UsersModule, GatewayModule, AssetsModule, GenerationsModule, BillingModule, CanvasesModule, CommunityModule, AdminModule],
+      imports: [CoreModule.forRoot(config), AuthModule, CreditsModule, UsersModule, GatewayModule, AssetsModule, GenerationsModule, BillingModule, CanvasesModule, CommunityModule, AdminModule, ObservabilityModule],
       controllers: [HealthController],
       providers: [JobsService],
     };
@@ -56,6 +58,7 @@ export async function createApp(config: AppConfig = loadConfig()): Promise<INest
   app.setGlobalPrefix('v1');
   app.set('trust proxy', 1);
   app.use(requestIdMiddleware);
+  app.use(httpObservability(app.get(MetricsService), config));
   app.use(cookieParser());
   // 画布文档可能较大（上限 1 MB，见 CanvasesService）；图片上传走签名 PUT，不经过 JSON 解析
   app.useBodyParser('json', { limit: '1100kb' });

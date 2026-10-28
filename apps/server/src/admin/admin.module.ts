@@ -8,6 +8,8 @@ import { CommunityModule } from '../community/community.module';
 import { Db, DB } from '../db/db';
 import { GatewayModule } from '../gateway/gateway.module';
 import { SafetyModule } from '../safety/safety.module';
+import { ReconcileService } from '../credits/reconcile.service';
+import { newId } from '../common/ids';
 import { AdminUsersService, MAX_ADJUST } from './admin-users.service';
 import { AdminService } from './admin.service';
 
@@ -43,7 +45,30 @@ export class AdminController {
   constructor(
     private readonly admin: AdminService,
     private readonly users: AdminUsersService,
+    private readonly reconcile: ReconcileService,
+    @Inject(DB) private readonly db: Db,
   ) {}
+
+  @Get('reconcile')
+  async reconcileRuns() {
+    return { data: await this.reconcile.recent(10) };
+  }
+
+  /** 立即执行一次全量对账（只读），写审计日志 */
+  @Post('reconcile/run')
+  @HttpCode(200)
+  async runReconcile(@UserId() adminId: string) {
+    const run = await this.reconcile.run('manual', adminId);
+    await this.db.query('INSERT INTO audit_logs (id, actor_id, action, target_type, target_id, detail) VALUES ($1, $2, $3, $4, $5, $6)', [
+      newId('aud'),
+      adminId,
+      'credits.reconcile',
+      'reconcile_run',
+      run.id,
+      JSON.stringify({ accounts: run.accounts, mismatches: run.mismatches, stale_holds: run.stale_holds }),
+    ]);
+    return run;
+  }
 
   @Get('users')
   listUsers(@Query() query: Record<string, unknown>) {

@@ -61,7 +61,7 @@ export class AuthController {
   }
 
   private cookieOpts() {
-    return { httpOnly: true, sameSite: 'lax' as const, secure: this.config.env === 'production', path: '/v1/auth' };
+    return { httpOnly: true, sameSite: 'lax' as const, secure: this.config.cookieSecure, path: '/v1/auth' };
   }
 
   private setCookie(res: Response, token: string) {

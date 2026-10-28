@@ -5,6 +5,7 @@ import { newId } from '../common/ids';
 import { CreditsService } from '../credits/credits.service';
 import { Db, DB } from '../db/db';
 import { EventBus } from '../events/event-bus';
+import { MetricsService } from '../observability/metrics.service';
 import { GatewayError, ModelGateway } from '../gateway/model-gateway.service';
 import type { ReferenceInput } from '../gateway/provider';
 import { LabelingService, type LabeledOutput, type RawOutput } from '../safety/labeling.service';
@@ -38,6 +39,7 @@ export class GenerationWorker implements OnApplicationBootstrap, OnApplicationSh
     private readonly storage: StorageService,
     private readonly generations: GenerationsService,
     private readonly bus: EventBus,
+    private readonly metrics: MetricsService,
   ) {}
 
   onApplicationBootstrap() {
@@ -128,6 +130,7 @@ export class GenerationWorker implements OnApplicationBootstrap, OnApplicationSh
         return true;
       });
       if (!done) return;
+      this.finished(task, 'succeeded');
       const dto = await this.generations.toDTO((await this.generations.row(task.user_id, task.id))!);
       this.bus.emit(task.user_id, { type: 'task.succeeded', task: dto });
       await this.credits.notify(task.account_id);
@@ -196,9 +199,17 @@ export class GenerationWorker implements OnApplicationBootstrap, OnApplicationSh
       return true;
     });
     if (!changed) return;
+    this.finished(task, status);
     const dto = await this.generations.toDTO((await this.generations.row(task.user_id, task.id))!);
     this.bus.emit(task.user_id, { type: 'task.failed', task: dto });
     await this.credits.notify(task.account_id);
+  }
+
+  /** 任务结束计数与端到端耗时（从提交到结束，含排队） */
+  private finished(task: TaskRow, status: string) {
+    const labels = { modality: task.modality, status };
+    this.metrics.inc('creature_tasks_finished_total', '结束的生成任务数', labels);
+    this.metrics.observe('creature_task_duration_seconds', '生成任务从提交到结束的耗时', { modality: task.modality }, (Date.now() - new Date(task.created_at).getTime()) / 1000);
   }
 
   private async setProgress(task: TaskRow, pct: number) {

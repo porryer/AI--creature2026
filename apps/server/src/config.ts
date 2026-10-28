@@ -4,7 +4,8 @@ import type { Modality } from '@creature/shared';
 export const CONFIG = Symbol('CONFIG');
 
 export interface AppConfig {
-  env: 'development' | 'test' | 'production';
+  /** staging：密钥与数据库按生产要求校验，但允许 Mock 的短信 / 支付 / 模型供应商（启动时告警） */
+  env: 'development' | 'test' | 'staging' | 'production';
   port: number;
   /** 设置后连接真实 PostgreSQL；为空时使用内嵌 PGlite */
   databaseUrl?: string;
@@ -23,6 +24,8 @@ export interface AppConfig {
   /** 返回给前端的文件地址前缀，同源部署时留空 */
   publicBaseUrl: string;
   corsOrigins: string[];
+  /** 刷新令牌 Cookie 是否只在 HTTPS 下发送（生产默认开启） */
+  cookieSecure: boolean;
   /** dev：验证码打印到日志并在响应中返回；production 必须接入短信服务商 */
   smsMode: 'dev' | 'provider';
   /** mock：订单可调用模拟支付；production 必须接入支付渠道 */
@@ -37,6 +40,15 @@ export interface AppConfig {
   moderationExtraWords: string[];
   /** 登录时授予管理后台权限的手机号 */
   adminPhones: string[];
+  /** 访问 /v1/metrics 的令牌；未设置时只在开发与测试环境开放 */
+  metricsToken?: string;
+  /** 每个请求输出一行访问日志 */
+  accessLog: boolean;
+  /** 每个用户每分钟最多提交的生成任务数、同时进行中的任务上限 */
+  generationRatePerMin: number;
+  maxInflightTasks: number;
+  /** 定时全量对账间隔（小时） */
+  reconcileIntervalHours: number;
 }
 
 const DEV_SECRET = 'creature-dev-secret-do-not-use-in-production';
@@ -51,8 +63,9 @@ function key32(raw: string | undefined, fallbackSeed: string): Buffer {
 }
 
 export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
-  const mode = (env.NODE_ENV === 'production' ? 'production' : env.NODE_ENV === 'test' ? 'test' : 'development') as AppConfig['env'];
+  const mode = (env.APP_ENV === 'staging' ? 'staging' : env.NODE_ENV === 'production' ? 'production' : env.NODE_ENV === 'test' ? 'test' : 'development') as AppConfig['env'];
   const prod = mode === 'production';
+  const strict = prod || mode === 'staging';
   const num = (v: string | undefined, d: number) => (v !== undefined && v !== '' && !Number.isNaN(Number(v)) ? Number(v) : d);
 
   const cfg: AppConfig = {
@@ -71,6 +84,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
     storageDir: env.STORAGE_DIR || '.data/files',
     publicBaseUrl: env.PUBLIC_BASE_URL || '',
     corsOrigins: (env.CORS_ORIGINS || 'http://localhost:5173').split(',').map((s) => s.trim()).filter(Boolean),
+    cookieSecure: env.COOKIE_SECURE ? env.COOKIE_SECURE === 'true' : prod,
     smsMode: env.SMS_MODE === 'provider' ? 'provider' : 'dev',
     paymentsMode: env.PAYMENTS_MODE === 'live' ? 'live' : 'mock',
     providerMode: env.PROVIDER_MODE === 'live' ? 'live' : 'mock',
@@ -88,11 +102,18 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
     serviceProviderCode: env.SERVICE_PROVIDER_CODE || 'CREATURE-DEV',
     moderationExtraWords: (env.MODERATION_EXTRA_WORDS || '').split(',').map((s) => s.trim()).filter(Boolean),
     adminPhones: (env.ADMIN_PHONES || '').split(',').map((s) => s.trim()).filter(Boolean),
+    metricsToken: env.METRICS_TOKEN || undefined,
+    accessLog: env.ACCESS_LOG ? env.ACCESS_LOG === 'true' : mode !== 'test',
+    generationRatePerMin: num(env.GENERATION_RATE_PER_MIN, 30),
+    maxInflightTasks: num(env.MAX_INFLIGHT_TASKS, 20),
+    reconcileIntervalHours: num(env.RECONCILE_INTERVAL_HOURS, 24),
   };
 
-  if (prod) {
+  if (strict) {
     const missing = ['JWT_SECRET', 'PHONE_ENC_KEY', 'PHONE_HASH_KEY', 'FILE_SIGNING_SECRET', 'DATABASE_URL'].filter((k) => !env[k]);
-    if (missing.length) throw new Error(`生产环境缺少配置：${missing.join(', ')}`);
+    if (missing.length) throw new Error(`${prod ? '生产' : 'staging '}环境缺少配置：${missing.join(', ')}`);
+  }
+  if (prod) {
     if (cfg.smsMode === 'dev') throw new Error('生产环境不能使用 SMS_MODE=dev，请接入短信服务商');
     if (cfg.paymentsMode === 'mock') throw new Error('生产环境不能使用模拟支付，请设置 PAYMENTS_MODE=live 并接入支付渠道');
     if (cfg.providerMode === 'mock') throw new Error('生产环境不能使用 Mock 模型供应商，请设置 PROVIDER_MODE=live');

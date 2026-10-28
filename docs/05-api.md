@@ -44,10 +44,10 @@
 | 404 | `NOT_FOUND` | 资源不存在 |
 | 409 | `IDEMPOTENCY_CONFLICT` | 相同幂等键但请求体不同 |
 | 422 | `CONTENT_REJECTED` | 提示词或素材未通过审核，`details.reason_code` |
-| 429 | `RATE_LIMITED` | 请求过于频繁 |
+| 429 | `RATE_LIMITED` | 请求过于频繁（验证码、上传、发布、举报的每日上限；生成任务每分钟提交次数与进行中任务数），附 `Retry-After` |
 | 503 | `MODEL_UNAVAILABLE` | 所选模型及备选模型均不可用 |
 
-### 1.3 实现状态（Sprint 1–4）
+### 1.3 实现状态（Sprint 1–5）
 
 已实现（`apps/server`，带集成测试）：
 
@@ -63,10 +63,10 @@
 | 上传 | `POST /assets/uploads`、`PUT /uploads/{id}?exp=&sig=`（签名地址，无需登录态）、`POST /assets/uploads/{id}/complete`，见 3.7 |
 | 项目与画布 | `GET /projects`、`POST /projects`（同时创建画布）、`PATCH /projects/{id}`、`DELETE /projects/{id}`、`GET /canvases/latest`、`GET /canvases/{id}`、`PUT /canvases/{id}`，见 3.8 |
 | 社区 | `GET /feed?tab=recommend\|latest\|hot\|mine&kind=&cursor=`、`POST /posts`、`GET /posts/{id}`、`DELETE /posts/{id}`（作者撤回）、`PUT` / `DELETE /posts/{id}/like`、`POST /posts/{id}/remix`、`POST /reports`，见 3.9 |
-| 管理后台 | `GET /admin/overview`、`GET /admin/models`、`GET /admin/review-queue`、`POST /admin/posts/{id}/decision`、`GET /admin/users`、`GET /admin/users/{id}`、`POST /admin/users/{id}/status`、`POST /admin/users/{id}/credits`（需 `role = admin`），见 3.10 |
+| 管理后台 | `GET /admin/overview`、`GET /admin/models`、`GET /admin/review-queue`、`POST /admin/posts/{id}/decision`、`GET /admin/users`、`GET /admin/users/{id}`、`POST /admin/users/{id}/status`、`POST /admin/users/{id}/credits`、`GET /admin/reconcile`、`POST /admin/reconcile/run`（需 `role = admin`），见 3.10 |
 | 积分 | `GET /credits/balance`、`GET /credits/ledger` |
 | 订单 | `POST /orders`、`GET /orders/{id}`、`POST /orders/{id}/mock-pay`（仅 `PAYMENTS_MODE=mock`） |
-| 运维 | `GET /healthz` |
+| 运维 | `GET /healthz`、`GET /metrics`（Prometheus 文本，令牌保护，见 [09 上线准备](./09-launch-readiness.md)） |
 
 其余接口（写作流式、画布运行与分享、Agent、模板、评论与关注流、团队、支付回调、开放 API）按 [开发计划](./07-roadmap.md) 在后续 Sprint 实现。刷新令牌通过 httpOnly Cookie `crt_rt`（路径 `/v1/auth`）下发，前端不接触。
 
@@ -460,6 +460,7 @@ data: {"session_status":"awaiting_confirm"}
 - `GET /v1/admin/users?q=&status=&cursor=`：`q` 可以是完整手机号（按 HMAC 索引精确匹配）、手机号后 4 位、昵称片段或用户 ID。`GET /v1/admin/users/{id}` 返回积分、任务与发布统计、最近 20 条积分流水、最近 10 个任务和针对该用户的操作记录。
 - `POST /v1/admin/users/{id}/status` `{ "status": "active" | "frozen" | "banned", "reason": "…" }`：冻结 / 封禁时吊销该用户全部刷新令牌，访问令牌在本实例内立即失效、其他实例最迟 10 秒后失效（返回 `403 ACCOUNT_SUSPENDED`），也无法再登录；不能修改自己或其他管理员。
 - `POST /v1/admin/users/{id}/credits` `{ "delta": 50, "reason": "生成异常补偿", "request_id": "…" }`：增加时发放一年有效的积分批次，扣减时按到期顺序扣除，可用余额不足返回 `400`；单次不超过 100000，同一 `request_id` 只生效一次；流水类型为 `adjust`，用户在自己的积分明细中可见。
+- `GET /v1/admin/reconcile`：最近 10 次全量对账（账户数、不一致账户数、已结束任务的残留冻结数与明细）；`POST /v1/admin/reconcile/run` 立即执行一次（只读核对，写审计日志）。
 
 ## 4. 开放 API（P2）
 

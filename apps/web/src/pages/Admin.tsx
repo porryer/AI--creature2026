@@ -1,4 +1,4 @@
-import { REPORT_REASONS, type AdminModelDTO, type AdminOverviewDTO, type ReviewItemDTO } from '@creature/shared';
+import { REPORT_REASONS, type AdminModelDTO, type AdminOverviewDTO, type ReconcileRunDTO, type ReviewItemDTO } from '@creature/shared';
 import { Check, Info, RefreshCw, ShieldOff, X } from 'lucide-react';
 import { useCallback, useEffect, useState } from 'react';
 import { Art } from '../components/Art';
@@ -214,9 +214,101 @@ function LiveAdmin() {
               )}
             </section>
           </div>
+          <ReconcilePanel />
         </>
       )}
     </div>
+  );
+}
+
+/** 账务对账：最近几次全量对账的结果，可手动触发（只读核对，不修改数据） */
+function ReconcilePanel() {
+  const { toast } = useStore();
+  const [runs, setRuns] = useState<ReconcileRunDTO[] | null>(null);
+  const [busy, setBusy] = useState(false);
+  useEffect(() => {
+    api.reconcileRuns().then(
+      (r) => setRuns(r.data),
+      (e) => {
+        setRuns([]);
+        toast(errorText(e), 'err');
+      },
+    );
+  }, [toast]);
+
+  const run = async () => {
+    setBusy(true);
+    try {
+      const r = await api.runReconcile();
+      setRuns((cur) => [r, ...(cur ?? [])].slice(0, 10));
+      toast(r.mismatches || r.stale_holds ? `对账发现 ${r.mismatches} 个账户不一致、${r.stale_holds} 笔残留冻结` : `对账完成，${r.accounts} 个账户全部一致`, r.mismatches || r.stale_holds ? 'err' : 'ok');
+    } catch (e) {
+      toast(errorText(e), 'err');
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const last = runs?.[0];
+  const bad = !!last && (last.mismatches > 0 || last.stale_holds > 0);
+  return (
+    <section className="panel" aria-labelledby="rec-title" style={{ minWidth: 0 }}>
+      <div className="section-title" style={{ padding: '16px 18px 4px' }}>
+        <h3 id="rec-title">账务对账</h3>
+        <button className="btn sm" disabled={busy} onClick={() => void run()}>
+          {busy ? '对账中…' : '立即对账'}
+        </button>
+      </div>
+      <div style={{ padding: '6px 18px 18px', display: 'grid', gap: 10 }}>
+        <p className="subtle" style={{ fontSize: 12.5 }}>
+          每个账户的可用 / 冻结余额与流水、积分批次、冻结明细逐项核对，并检查已结束任务是否还有冻结积分。默认每 24 小时自动执行一次。
+        </p>
+        {runs === null ? (
+          <p className="subtle">加载中…</p>
+        ) : !last ? (
+          <p className="subtle">还没有对账记录</p>
+        ) : (
+          <>
+            <div className="admin-row" style={{ borderBottom: 0 }}>
+              <span className={`tag ${bad ? 'danger' : 'ok'}`}>{bad ? '发现异常' : '全部一致'}</span>
+              <span className="grow">
+                {last.trigger === 'manual' ? '手动' : '定时'}对账 · {fmt(last.accounts)} 个账户 · 不一致 {last.mismatches} · 残留冻结 {last.stale_holds}
+              </span>
+              <span className="subtle">{timeAgo(Date.parse(last.started_at))}</span>
+            </div>
+            {last.details.accounts?.map((a) => (
+              <div key={a.account_id} className="admin-row">
+                <span className="grow mono" style={{ fontSize: 12 }}>
+                  {a.owner_id}
+                </span>
+                <span className="mono" style={{ fontSize: 12 }}>
+                  可用 {a.available} / 流水 {a.ledger_available} / 批次 {a.grants_remaining} · 冻结 {a.frozen} / 流水 {a.ledger_frozen} / 明细 {a.holds}
+                </span>
+              </div>
+            ))}
+            {last.details.holds?.map((h) => (
+              <div key={h.task_id} className="admin-row">
+                <span className="grow mono" style={{ fontSize: 12 }}>
+                  {h.task_id}
+                </span>
+                <span className="mono" style={{ fontSize: 12 }}>
+                  任务已{h.status === 'succeeded' ? '完成' : '结束'}，仍冻结 {h.amount} 积分
+                </span>
+              </div>
+            ))}
+            {runs.length > 1 && (
+              <div className="subtle" style={{ fontSize: 12 }}>
+                此前：
+                {runs
+                  .slice(1, 6)
+                  .map((r) => `${timeAgo(Date.parse(r.started_at))}${r.mismatches || r.stale_holds ? '（异常）' : '（一致）'}`)
+                  .join(' · ')}
+              </div>
+            )}
+          </>
+        )}
+      </div>
+    </section>
   );
 }
 

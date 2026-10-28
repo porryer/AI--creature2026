@@ -1,6 +1,7 @@
-import { Inject, Injectable, Logger } from '@nestjs/common';
+import { Inject, Injectable, Logger, Optional } from '@nestjs/common';
 import { fallbackModels, findModel, MODELS, modelsFor, routeModel, type Modality, type ModelInfo, type RouteResult, type RoutingStrategy } from '@creature/shared';
 import { AppConfig, CONFIG } from '../config';
+import { MetricsService } from '../observability/metrics.service';
 import type { RawOutput } from '../safety/labeling.service';
 import { AdapterRequest, PROVIDER_ADAPTERS, ProviderAdapter, VendorError } from './provider';
 
@@ -49,6 +50,7 @@ export class ModelGateway {
   constructor(
     @Inject(CONFIG) private readonly config: AppConfig,
     @Inject(PROVIDER_ADAPTERS) private readonly adapters: ProviderAdapter[],
+    @Optional() private readonly metrics?: MetricsService,
   ) {
     const missing = MODELS.filter((m) => !this.adapterFor(m)).map((m) => m.code);
     if (missing.length) this.logger.warn(`以下模型没有可用的供应商适配器，已停用：${missing.join(', ')}`);
@@ -122,6 +124,7 @@ export class ModelGateway {
   }
 
   private record(code: string, ok: boolean) {
+    this.metrics?.inc('creature_model_calls_total', '模型调用次数（含切换备选）', { model: code, result: ok ? 'ok' : 'error' });
     const now = Date.now();
     const list = (this.outcomes.get(code) ?? []).filter((o) => now - o.t < WINDOW_MS);
     list.push({ t: now, ok });

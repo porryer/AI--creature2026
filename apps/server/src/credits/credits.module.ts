@@ -2,6 +2,7 @@ import { Controller, Get, Module, Query, UseGuards } from '@nestjs/common';
 import { pageParams, UserId } from '../common/http';
 import { AuthGuard } from '../auth/auth.guard';
 import { CreditsService } from './credits.service';
+import { ReconcileService } from './reconcile.service';
 
 @Controller('credits')
 @UseGuards(AuthGuard)
@@ -22,7 +23,7 @@ export class CreditsController {
 
 @Module({
   controllers: [CreditsController],
-  providers: [CreditsService],
-  exports: [CreditsService],
+  providers: [CreditsService, ReconcileService],
+  exports: [CreditsService, ReconcileService],
 })
 export class CreditsModule {}

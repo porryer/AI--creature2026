@@ -31,6 +31,8 @@ import { ParamsSchema, RoutingSchema } from '../gateway/gateway.module';
 import { ModelGateway } from '../gateway/model-gateway.service';
 import { ModerationService } from '../safety/moderation.service';
 import { StorageService } from '../storage/storage.service';
+import { SlidingWindowLimiter } from '../common/rate-limit';
+import { AppConfig, CONFIG } from '../config';
 
 /** 涂抹区域（PNG data URL）的长度上限，约 730 KB 的图片 */
 const MAX_MASK_CHARS = 1_000_000;
@@ -104,7 +106,10 @@ export function ledgerMemo(t: Pick<TaskRow, 'modality' | 'params'>, modelName: s
 
 @Injectable()
 export class GenerationsService {
+  private readonly limiter: SlidingWindowLimiter;
+
   constructor(
+    @Inject(CONFIG) private readonly config: AppConfig,
     @Inject(DB) private readonly db: Db,
     private readonly gateway: ModelGateway,
     private readonly credits: CreditsService,
@@ -112,7 +117,9 @@ export class GenerationsService {
     private readonly assets: AssetsService,
     private readonly bus: EventBus,
     private readonly storage: StorageService,
-  ) {}
+  ) {
+    this.limiter = new SlidingWindowLimiter(config.generationRatePerMin, 60_000);
+  }
 
   async create(userId: string, rawBody: unknown, idemKey: string | undefined): Promise<{ task: TaskDTO; replay: boolean }> {
     if (!idemKey || !/^[\w-]{8,100}$/.test(idemKey)) throw Errors.invalid('请求头缺少有效的 Idempotency-Key（8–100 位字母、数字、- 或 _）');
@@ -124,6 +131,12 @@ export class GenerationsService {
       if (existing.request_hash !== requestHash) throw Errors.idempotencyConflict();
       return { task: await this.toDTO(existing), replay: true };
     }
+
+    // 防刷：每分钟提交次数与同时进行中的任务数（重放不计入）
+    const wait = this.limiter.take(userId);
+    if (wait) throw Errors.rateLimited(`提交太频繁，请 ${wait} 秒后再试`, wait);
+    const [{ n }] = await this.db.query<{ n: number }>(`SELECT COUNT(*)::int AS n FROM generation_tasks WHERE user_id = $1 AND status IN ('queued', 'running', 'post_processing')`, [userId]);
+    if (n >= this.config.maxInflightTasks) throw Errors.rateLimited(`进行中的任务已有 ${n} 个，请等部分完成后再提交`, 10);
 
     const imageEdit = body.modality === 'image' && body.operation === 'edit';
     const edit = imageEdit ? await this.checkEdit(userId, body) : null;

@@ -40,10 +40,12 @@ npm run build:demo -w @creature/web   # 输出单文件演示版 apps/web/dist-s
 | `npm test` | 共享包与后端测试（后端默认跑在内存 PGlite 上） |
 | `TEST_DATABASE_URL=postgres://… npm test -w @creature/server` | 后端测试跑在真实 PostgreSQL 上（每个测试应用使用独立 schema） |
 | `npm run build` | 构建共享包、后端与前端 |
+| `cd deploy && docker compose up -d --build` | 启动 staging 环境（PostgreSQL + 后端 + nginx，见 [deploy/README.md](./deploy/README.md)） |
+| `node scripts/loadtest.mjs --base http://localhost:8080 …` | 压测提交或读接口，结束后自动对账 |
 
 后端配置见 [`apps/server/.env.example`](./apps/server/.env.example)。生产环境必须提供 `DATABASE_URL` 与各项密钥，并接入真实的短信、支付与模型供应商（未接入时服务会拒绝启动，而不是静默降级）。
 
-## 当前进度（Sprint 1–4）
+## 当前进度（Sprint 1–5）
 
 **已完成并有测试覆盖**
 - 手机号验证码登录（限流、错误次数上限）、JWT 访问令牌 + httpOnly Cookie 刷新令牌（轮换与重用检测）、每日赠送
@@ -59,6 +61,7 @@ npm run build:demo -w @creature/web   # 输出单文件演示版 apps/web/dist-s
 - 灵感广场：发布（机审 + 人工复核）、推荐 / 最新 / 最热、点赞、做同款（沿用原作参数与模型）、举报（累计自动隐藏）
 - 图像编辑：局部重绘（在图上涂抹）、扩图、消除、抠图、超分 2× / 4×，按次计费，结果带 AI 标识
 - 管理后台 v1：运营概览、模型健康度、广场内容复核、用户管理（冻结 / 封禁立即生效、人工调整积分），处理留审核记录与审计日志（`ADMIN_PHONES` 授权）
+- 上线准备：staging 环境（容器镜像 + docker compose）、`/v1/metrics` 指标、访问日志与安全响应头、生成提交限流、定时全量对账与后台面板、压测脚本与首轮结果（见 [docs/09-launch-readiness.md](./docs/09-launch-readiness.md)）
 - 前端：登录、四个创作工作台、画布与小造 Agent、项目、资产、灵感广场、会员积分、管理后台全部接入真实接口
 
 **尚未接入（需要外部账号或商务合同）**

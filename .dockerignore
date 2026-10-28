@@ -1,0 +1,12 @@
+# 构建上下文为仓库根目录，只需要源码与锁文件
+**/node_modules
+**/dist
+**/dist-single
+**/.data
+**/coverage
+**/*.local
+**/.env
+deploy/.env
+.git
+.github
+docs
