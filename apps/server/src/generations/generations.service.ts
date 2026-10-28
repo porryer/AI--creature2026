@@ -7,6 +7,7 @@ import {
   findModel,
   normalizeParams,
   PLANS,
+  QUEUE_POSITION_CAP,
   TIER_LABEL,
   type GenerationParams,
   type Modality,
@@ -345,9 +346,12 @@ export class GenerationsService {
     const model = findModel(r.used_model_code ?? r.model_code);
     let position: number | null = null;
     if (r.status === 'queued') {
+      // 每个模态有独立的 Worker 槽位，只数同一模态排在前面的任务；计数设上限，积压很大时耗时不随之增长
       const [p] = await this.db.query<{ n: number }>(
-        `SELECT COUNT(*)::int AS n FROM generation_tasks WHERE status = 'queued' AND (queue < $1 OR (queue = $1 AND created_at < $2))`,
-        [r.queue, r.created_at],
+        `SELECT COUNT(*)::int AS n FROM (
+           SELECT 1 FROM generation_tasks WHERE status = 'queued' AND modality = $1 AND (queue < $2 OR (queue = $2 AND created_at < $3)) LIMIT $4
+         ) ahead`,
+        [r.modality, r.queue, r.created_at, QUEUE_POSITION_CAP],
       );
       position = (p?.n ?? 0) + 1;
     }

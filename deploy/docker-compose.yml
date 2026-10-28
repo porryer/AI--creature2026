@@ -1,7 +1,8 @@
-# 造物 Creature staging 编排：PostgreSQL + 后端 + 用户端（nginx）
+# 造物 Creature staging 编排：PostgreSQL + 后端 + 用户端（nginx），可选 MinIO 对象存储
 #   cp .env.example .env   # 按说明填写密钥
 #   docker compose up -d --build
 #   打开 http://localhost:8080
+# 使用对象存储：在 .env 中设置 STORAGE_DRIVER=s3 与 S3_*（见 .env.example），然后 docker compose --profile s3 up -d
 # 基础镜像可在 .env 中换成镜像站地址（见 .env.example）
 name: creature-staging
 
@@ -43,6 +44,20 @@ services:
       db:
         condition: service_healthy
 
+  # S3 兼容对象存储（只在 --profile s3 时启动）；浏览器直接上传与读取，因此端口需要对外可访问（S3_PUBLIC_ENDPOINT）
+  minio:
+    image: ${MINIO_IMAGE:-minio/minio:latest}
+    profiles: ['s3']
+    restart: unless-stopped
+    command: server /data --console-address :9001
+    environment:
+      MINIO_ROOT_USER: ${S3_ACCESS_KEY_ID:-creature}
+      MINIO_ROOT_PASSWORD: ${S3_SECRET_ACCESS_KEY:-}
+    ports:
+      - '${MINIO_PORT:-9000}:9000'
+    volumes:
+      - minio-data:/data
+
   web:
     build:
       context: ..
@@ -61,3 +76,4 @@ services:
 volumes:
   db-data:
   files:
+  minio-data:

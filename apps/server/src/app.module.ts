@@ -32,7 +32,7 @@ class HealthController {
   @Get()
   async health() {
     await this.db.query('SELECT 1');
-    return { ok: true, db: this.db.driver, providers: this.config.providerMode, models: this.gateway.available().length };
+    return { ok: true, db: this.db.driver, storage: this.config.storageDriver, providers: this.config.providerMode, models: this.gateway.available().length };
   }
 }
 
@@ -64,6 +64,8 @@ export async function createApp(config: AppConfig = loadConfig()): Promise<INest
   app.useBodyParser('json', { limit: '1100kb' });
   app.enableCors({ origin: config.corsOrigins, credentials: true, exposedHeaders: ['X-Request-Id'] });
   app.useGlobalFilters(new AllExceptionsFilter());
-  app.enableShutdownHooks();
+  // 关闭流程（Worker 等待或重新排队处理中的任务）结束后直接退出：容器内进程是 PID 1，重新发送给自己的 SIGTERM 会被忽略，
+  // 进程会一直等到已放弃的模型调用结束
+  app.enableShutdownHooks([], { useProcessExit: true });
   return app;
 }

@@ -40,6 +40,24 @@ node scripts/loadtest.mjs --base http://localhost:8080 --scenario read --users 5
 - 生成任务以数据库为队列、`FOR UPDATE SKIP LOCKED` 认领，各实例的 Worker 同时处理；
 - 推送通过 PostgreSQL `LISTEN / NOTIFY` 在实例之间转发，用户的推送连接与处理任务的实例可以不同；
 - 冻结 / 封禁账号会通知所有实例立即失效；提交限流按数据库计数，各实例共享同一个额度；
-- 启动时的数据库迁移持有咨询锁，多个实例同时启动不会冲突。
+- 启动时的数据库迁移持有咨询锁，多个实例同时启动不会冲突；
+- 文件存储：多台机器部署时必须使用对象存储（`STORAGE_DRIVER=s3`），本地卷只能在同一台机器的实例之间共享。
 
 注意：每个实例会占用一条常驻的数据库连接用于 `LISTEN`。如果在后端与数据库之间加 PgBouncer，这条连接必须走 session 模式（transaction 模式不支持 `LISTEN`）。多个环境共用一个数据库时，用 `EVENTS_CHANNEL` 区分通知频道。验证方法与压测结果见 [docs/09-launch-readiness.md](../docs/09-launch-readiness.md#7-多实例部署)。
+
+## 对象存储
+
+编排内置可选的 MinIO（`--profile s3`）：
+
+```bash
+# .env 中设置 STORAGE_DRIVER=s3 与 S3_*（见 .env.example，S3_SECRET_ACCESS_KEY 至少 8 位）
+docker compose --profile s3 up -d --build
+curl -s http://localhost:8080/v1/healthz   # "storage":"s3"
+```
+
+浏览器直接上传到存储、读取文件时跳转到存储，因此 `S3_PUBLIC_ENDPOINT`（默认 `http://localhost:9000`）必须能从浏览器访问。换成阿里云 OSS / 腾讯云 COS 时：填写对应的 S3 兼容地址与区域、`S3_FORCE_PATH_STYLE=false`，并在控制台为存储桶配置允许本站来源 `PUT` / `GET` 的跨域规则；建议为存储桶绑定独立域名或 CDN（`S3_PUBLIC_ENDPOINT` 填该域名）。详见 [docs/09-launch-readiness.md](../docs/09-launch-readiness.md#81-对象存储)。
+
+## 停机与滚动重启
+
+后端收到停止信号后不再认领新任务，等待处理中的任务最多 `WORKER_SHUTDOWN_GRACE_MS`（默认 8 秒），仍未结束的重新排队由其他实例接手，然后退出。`docker stop` 默认等待 10 秒，Kubernetes 默认 30 秒，宽限期应小于编排的停止等待时间。
+

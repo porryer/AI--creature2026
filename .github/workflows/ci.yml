@@ -48,6 +48,26 @@ jobs:
         env:
           TEST_DATABASE_URL: postgres://creature:creature@localhost:5432/creature_test
 
+  s3:
+    name: 对象存储驱动测试（MinIO）
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - name: 启动 MinIO
+        run: |
+          docker run -d --name minio -p 9000:9000 -e MINIO_ROOT_USER=creature-test -e MINIO_ROOT_PASSWORD=creature-test-secret minio/minio:latest server /data
+          for i in $(seq 1 30); do curl -fsS -o /dev/null http://127.0.0.1:9000/minio/health/live && break; sleep 1; done
+      - run: npm ci
+      - run: npm test -w @creature/server -- test/storage-s3.e2e.test.ts test/s3-sign.test.ts
+        env:
+          TEST_S3_ENDPOINT: http://127.0.0.1:9000
+          TEST_S3_ACCESS_KEY: creature-test
+          TEST_S3_SECRET_KEY: creature-test-secret
+
   images:
     name: 构建容器镜像（后端 · 用户端）
     runs-on: ubuntu-latest
@@ -69,3 +89,18 @@ jobs:
           curl -fsS http://localhost:8080/v1/healthz
           curl -fsS -o /dev/null http://localhost:8080/
           docker compose down -v
+      - name: staging 编排冒烟测试（对象存储）
+        working-directory: deploy
+        run: |
+          sed -i 's|^STORAGE_DRIVER=local$|STORAGE_DRIVER=s3|' .env
+          cat >> .env <<EOF
+          S3_ENDPOINT=http://minio:9000
+          S3_PUBLIC_ENDPOINT=http://localhost:9000
+          S3_BUCKET=creature
+          S3_ACCESS_KEY_ID=creature
+          S3_SECRET_ACCESS_KEY=$(openssl rand -hex 16)
+          S3_FORCE_PATH_STYLE=true
+          EOF
+          docker compose --profile s3 up -d --no-build --wait
+          curl -fsS http://localhost:8080/v1/healthz | grep '"storage":"s3"'
+          docker compose --profile s3 down -v

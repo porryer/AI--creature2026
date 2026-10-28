@@ -78,6 +78,7 @@ export interface TaskDTO {
   routing_reason: string;
   estimated_credits: number;
   actual_credits: number | null;
+  /** position：同一模态排队中的第几位（1 表示下一个处理）；前方超过 QUEUE_POSITION_CAP 个时为 QUEUE_POSITION_CAP + 1 */
   queue: { name: string; position: number | null };
   outputs: OutputDTO[];
   references: ReferenceDTO[];
@@ -359,3 +360,6 @@ export type ServerEvent =
   | { type: 'credits.changed'; credits: BalanceDTO }
   /** 推送可能有遗漏（如服务端事件监听重连）：客户端应重新拉取进行中的任务与余额 */
   | { type: 'sync' };
+
+/** 排队位置最多精确计数到前方这么多个任务，超过时显示为"前方 1000+ 个" */
+export const QUEUE_POSITION_CAP = 1000;

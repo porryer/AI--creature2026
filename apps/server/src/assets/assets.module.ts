@@ -5,7 +5,7 @@ import { AuthGuard } from '../auth/auth.guard';
 import { Errors } from '../common/errors';
 import { pageParams, parse, UserId } from '../common/http';
 import { SafetyModule } from '../safety/safety.module';
-import { StorageService } from '../storage/storage.service';
+import { contentDisposition, StorageService } from '../storage/storage.service';
 import { AssetsService } from './assets.service';
 import { FoldersService } from './folders.service';
 import { MAX_UPLOAD_BYTES, UPLOAD_MIMES, UploadsService } from './uploads.service';
@@ -129,18 +129,21 @@ export class FilesController {
 
   @Get(':token')
   serve(@Param('token') token: string, @Query('exp') exp: string, @Query('sig') sig: string, @Query('dl') dl: string | undefined, @Res() res: Response) {
-    const file = this.storage.open(token, exp, sig, typeof dl === 'string' ? dl : undefined);
-    if (!file) throw Errors.notFound('文件');
-    if (file.filename) {
-      const ascii = file.filename.replace(/[^\x20-\x7e]/g, '_').replace(/["\\]/g, '_');
-      res.setHeader('Content-Disposition', `attachment; filename="${ascii}"; filename*=UTF-8''${encodeURIComponent(file.filename)}`);
+    const file = this.storage.verifyFile(token, exp, sig, typeof dl === 'string' ? dl : undefined);
+    const out = file && this.storage.deliver(file);
+    if (!file || !out) throw Errors.notFound('文件');
+    // 对象存储：跳转到预签名读取地址（有效期与本地址一致，跳转本身可被浏览器缓存）
+    if ('redirect' in out) {
+      res.setHeader('Cache-Control', `private, max-age=${Math.max(0, file.maxAge - 30)}`);
+      return res.redirect(302, out.redirect);
     }
+    if (file.filename) res.setHeader('Content-Disposition', contentDisposition(file.filename));
     res.setHeader('Content-Type', file.mime);
     res.setHeader('Cache-Control', `private, max-age=${Math.max(0, file.maxAge)}`);
     res.setHeader('X-Content-Type-Options', 'nosniff');
     // 文件以独立沙箱渲染，即使是 SVG 也无法执行脚本
     res.setHeader('Content-Security-Policy', "default-src 'none'; style-src 'unsafe-inline'; img-src data:; sandbox");
-    file.stream.pipe(res);
+    out.stream.pipe(res);
   }
 }
 

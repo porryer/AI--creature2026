@@ -31,10 +31,13 @@ import { ModelPicker, resolveModel } from '../components/ModelPicker';
 import { Segmented, Status, Switch } from '../components/ui';
 import { waveFor } from '@creature/shared';
 import { BRAND_KIT, CHARACTERS, VOICES, WRITING_TEMPLATES, timeAgo } from '../lib/mock';
-import { AI_TEXT_LABEL, editLabel, estimateCredits, modelByCode, modelsFor, stripAiTextLabel, type GenerationParams, type TransformKind } from '@creature/shared';
+import { AI_TEXT_LABEL, editLabel, estimateCredits, modelByCode, modelsFor, QUEUE_POSITION_CAP, stripAiTextLabel, type GenerationParams, type TransformKind } from '@creature/shared';
 import { navigate } from '../lib/router';
 import { uid, useStore, type Handoff } from '../lib/store';
 import type { Asset, Modality, ModelInfo, Output, RoutingStrategy, Task } from '../lib/types';
+
+/** 排队位置：1 表示下一个处理；超过计数上限时显示为"1000+" */
+const queueLabel = (pos: number) => (pos <= 1 ? '排队中 · 即将开始' : `排队中 · 前方 ${pos > QUEUE_POSITION_CAP ? `${QUEUE_POSITION_CAP}+` : pos - 1} 个任务`);
 
 const MODE_TABS: { value: Modality; label: string; icon: typeof ImageIcon }[] = [
   { value: 'image', label: '图像', icon: ImageIcon },
@@ -196,7 +199,7 @@ function TaskCard({ task, onVariant }: { task: Task; onVariant?: (t: Task) => vo
       {(task.status === 'queued' || task.status === 'running') && (
         <div className="task-progress">
           <div className="row">
-            <span>{task.status === 'queued' ? `排队中 · 前方 ${task.queuePos} 个任务` : task.progress < 85 ? '生成中' : '审核与添加 AI 标识'}</span>
+            <span>{task.status === 'queued' ? queueLabel(task.queuePos) : task.progress < 85 ? '生成中' : '审核与添加 AI 标识'}</span>
             <span className="mono">{task.progress}%</span>
           </div>
           <div className="progress">

@@ -29,10 +29,12 @@ interface UploadRow {
 }
 
 /**
- * 素材上传（与对象存储直传一致的三步流程）：
+ * 素材上传（三步流程，两种存储驱动对客户端一致）：
  * 1. 创建上传会话，返回 15 分钟有效的签名上传地址；
- * 2. 客户端 PUT 原始文件到该地址，服务端按声明大小截断读取并校验文件头；
- * 3. 完成上传：内容审核通过后生成资产。上传的素材不是 AI 生成内容，不添加 AI 标识。
+ * 2. 客户端 PUT 原始文件到该地址：本地驱动由本服务接收，按声明大小截断读取并校验文件头；
+ *    对象存储驱动直接上传到存储桶（大小参与签名，存储端拒绝不一致的请求）；
+ * 3. 完成上传：对象存储驱动在此校验文件头（不符时删除并允许重新上传）；内容审核通过后生成资产。
+ * 上传的素材不是 AI 生成内容，不添加 AI 标识。
  */
 @Injectable()
 export class UploadsService {
@@ -48,22 +50,25 @@ export class UploadsService {
     if ((stat?.n ?? 0) >= DAILY_UPLOAD_LIMIT) throw Errors.rateLimited('今天的上传次数已达上限，请明天再试', 3600);
     const id = newId('upl');
     const expiresAt = addSeconds(new Date(), UPLOAD_TTL_SEC);
+    const key = StorageService.keyFor('private', userId, id, b.mime);
     await this.db.query(
       `INSERT INTO uploads (id, user_id, filename, mime_type, max_bytes, status, storage_key, expires_at) VALUES ($1, $2, $3, $4, $5, 'pending', $6, $7)`,
-      [id, userId, b.filename, b.mime, b.size, StorageService.keyFor('private', userId, id, b.mime), expiresAt],
+      [id, userId, b.filename, b.mime, b.size, key, expiresAt],
     );
+    const target = this.storage.uploadTarget(id, key, b.mime, b.size, expiresAt);
     return {
       upload_id: id,
-      upload_url: this.storage.signedUploadUrl(id, expiresAt),
+      upload_url: target.url,
       method: 'PUT' as const,
-      headers: { 'content-type': b.mime },
+      headers: target.headers,
       max_bytes: b.size,
       expires_at: expiresAt.toISOString(),
     };
   }
 
-  /** 接收上传的文件（签名鉴权，无需登录令牌） */
+  /** 接收上传的文件（签名鉴权，无需登录令牌；仅本地驱动，对象存储驱动由客户端直传） */
   async receive(id: string, exp: string, sig: string, body: Readable): Promise<void> {
+    if (this.storage.direct) throw Errors.notFound('上传地址');
     if (!this.storage.verifyUpload(id, exp, sig)) throw Errors.forbidden('上传地址无效或已过期');
     const [u] = await this.db.query<UploadRow>('SELECT * FROM uploads WHERE id = $1', [id]);
     if (!u || u.status !== 'pending' || new Date(u.expires_at).getTime() < Date.now()) throw Errors.conflict('UPLOAD_CLOSED', '上传会话已结束，请重新上传');
@@ -89,7 +94,8 @@ export class UploadsService {
     if (!u) throw Errors.notFound('上传');
     if (u.status === 'completed' && u.asset_id) return this.assets.get(userId, u.asset_id);
     if (u.status === 'rejected') throw Errors.contentRejected('upload');
-    if (u.status !== 'uploaded') throw Errors.conflict('UPLOAD_INCOMPLETE', '文件尚未上传完成');
+    if (u.status === 'pending' && this.storage.direct) await this.verifyDirect(u);
+    else if (u.status !== 'uploaded') throw Errors.conflict('UPLOAD_INCOMPLETE', '文件尚未上传完成');
 
     const data = await this.storage.read(u.storage_key);
     const info = imageInfo(data)!;
@@ -115,5 +121,18 @@ export class UploadsService {
     });
     if (!row) return this.complete(userId, id);
     return this.assets.toDTO(row);
+  }
+
+  /** 直传到对象存储的文件：校验大小与文件头，不符时删除文件（会话仍可重新上传） */
+  private async verifyDirect(u: UploadRow): Promise<void> {
+    const data = await this.storage.tryRead(u.storage_key);
+    if (!data) throw Errors.conflict('UPLOAD_INCOMPLETE', '文件尚未上传完成');
+    const info = imageInfo(data);
+    if (data.length > u.max_bytes || !info || info.mime !== u.mime_type) {
+      await this.storage.delete(u.storage_key);
+      if (data.length > u.max_bytes) throw new AppError('PAYLOAD_TOO_LARGE', 413, '文件大小超过申请上传时声明的大小');
+      throw Errors.invalid('文件内容与声明的图片格式不符，仅支持 PNG、JPEG、WebP');
+    }
+    await this.db.query(`UPDATE uploads SET status = 'uploaded', size_bytes = $2 WHERE id = $1 AND status = 'pending'`, [u.id, data.length]);
   }
 }

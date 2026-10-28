@@ -281,6 +281,8 @@ Content-Type: application/json
 }
 ```
 
+`queue.position` 是同一模态排队中的第几位（1 表示下一个处理；各模态的 Worker 槽位独立，只数同一模态的任务），最多精确到前方 1000 个，超过时为 1001。
+
 ### 3.2 查询任务
 
 `GET /v1/generations/tsk_01JBX3K9Q2M7`
@@ -414,13 +416,15 @@ data: {"session_status":"awaiting_confirm"}
 
 ### 3.7 素材上传
 
-三步完成，客户端协议与 OSS 直传一致（当前签名地址指向 API 自身，切换到 OSS 时只换 `upload_url`）：
+三步完成。`upload_url` 在本地存储驱动下指向 API 自身，在对象存储驱动下是存储桶的预签名地址（浏览器直传，存储桶需允许本站跨域），客户端处理方式相同：
 
 1. `POST /v1/assets/uploads` `{ "filename": "新品.png", "mime": "image/png", "size": 482133 }` → `201`
    `{ "upload_id": "upl_…", "upload_url": "/v1/uploads/upl_…?exp=…&sig=…", "method": "PUT", "headers": { "content-type": "image/png" }, "max_bytes": 482133, "expires_at": "…" }`。
    支持 PNG / JPEG / WebP，单个 ≤ 20 MB，每人每天 200 次。
-2. `PUT {upload_url}`，请求体为文件内容 → `204`。签名错误或过期 `403`；超过声明大小 `413`；文件头识别出的格式与声明不符 `400`；重复上传 `409 UPLOAD_CLOSED`。
-3. `POST /v1/assets/uploads/{upload_id}/complete` → `200` 返回资产（`source: "uploaded"`，不加 AI 标识）。未上传 `409 UPLOAD_INCOMPLETE`；审核不通过 `422 CONTENT_REJECTED`（留审核记录，不生成资产）；重复调用返回同一资产。
+2. `PUT {upload_url}`，带上 `headers`，请求体为文件内容，且必须恰好是声明的 `size` 字节 → `2xx`（本地驱动 `204`，对象存储 `200`）。签名错误或过期 `403`。本地驱动：超过声明大小 `413`、文件头识别出的格式与声明不符 `400`、重复上传 `409 UPLOAD_CLOSED`；对象存储：大小或 `content-type` 与签名不符 `403`。
+3. `POST /v1/assets/uploads/{upload_id}/complete` → `200` 返回资产（`source: "uploaded"`，不加 AI 标识）。未上传 `409 UPLOAD_INCOMPLETE`；对象存储驱动在此校验文件头，与声明不符 `400`（文件被删除，可在有效期内重新上传）；审核不通过 `422 CONTENT_REJECTED`（留审核记录，不生成资产）；重复调用返回同一资产。
+
+文件地址 `/v1/files/...` 在对象存储驱动下返回 `302`，跳转到有效期相同的存储桶预签名地址（`<img>`、下载链接会自动跟随）。
 
 ### 3.8 保存画布
 

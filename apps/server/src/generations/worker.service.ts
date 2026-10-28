@@ -16,18 +16,27 @@ import { GenerationsService, ledgerMemo, type TaskRow } from './generations.serv
 /** 处理中的任务超过该时长视为卡死（含模型超时与余量），会被重新排队或判定失败 */
 const STALE_MS: Record<Modality, number> = { image: 5 * 60_000, video: 20 * 60_000, text: 3 * 60_000, audio: 5 * 60_000 };
 const MAX_ATTEMPTS = 3;
+const MODALITIES: Modality[] = ['image', 'video', 'text', 'audio'];
+/** 卡死任务检查间隔 */
+const RECOVER_INTERVAL_MS = 30_000;
 
 /**
  * 生成任务 Worker（docs/03-architecture.md 5.2 状态机）：
  * queued → running → post_processing → succeeded / failed / blocked。
  * 以数据库为队列（FOR UPDATE SKIP LOCKED），可水平扩展多个实例；后续可替换为 Temporal 工作流。
+ * 每个模态有独立的并发槽位，任务结束即补位认领，慢任务不会拖住其他任务。
  */
 @Injectable()
 export class GenerationWorker implements OnApplicationBootstrap, OnApplicationShutdown {
   private readonly logger = new Logger('Worker');
   private timer?: NodeJS.Timeout;
+  private recoverTimer?: NodeJS.Timeout;
   private stopped = false;
-  private running?: Promise<unknown>;
+  /** 后台循环是否开启（测试中关闭，由 runOnce 驱动） */
+  private looping = false;
+  private claiming?: Promise<number>;
+  private refill = false;
+  private readonly active = new Map<string, { task: TaskRow; done: Promise<void> }>();
 
   constructor(
     @Inject(CONFIG) private readonly config: AppConfig,
@@ -44,33 +53,105 @@ export class GenerationWorker implements OnApplicationBootstrap, OnApplicationSh
 
   onApplicationBootstrap() {
     if (!this.config.worker.enabled) return;
+    this.looping = true;
     const loop = async () => {
       if (this.stopped) return;
-      this.running = this.runOnce().catch((e) => this.logger.error('Worker 轮询失败', e instanceof Error ? e.stack : String(e)));
-      await this.running;
+      await this.fill().catch((e) => this.logger.error('Worker 认领任务失败', e instanceof Error ? e.stack : String(e)));
       if (!this.stopped) this.timer = setTimeout(loop, this.config.worker.pollMs);
     };
     this.timer = setTimeout(loop, 0);
-    this.logger.log(`已启动：并发 ${this.config.worker.concurrency}，轮询间隔 ${this.config.worker.pollMs}ms`);
+    const recover = () => void this.recoverStale().catch((e) => this.logger.error('卡死任务检查失败', e instanceof Error ? e.stack : String(e)));
+    recover();
+    this.recoverTimer = setInterval(recover, RECOVER_INTERVAL_MS);
+    const c = this.config.worker.concurrency;
+    this.logger.log(`已启动：并发 图像 ${c.image} / 视频 ${c.video} / 文本 ${c.text} / 音频 ${c.audio}，轮询间隔 ${this.config.worker.pollMs}ms`);
   }
 
+  /** 停止认领；等待处理中的任务，超过宽限期仍未结束的重新排队，由其他实例接手（不必等卡死回收） */
   async onApplicationShutdown() {
     this.stopped = true;
     clearTimeout(this.timer);
-    await this.running;
+    clearInterval(this.recoverTimer);
+    await this.claiming?.catch(() => undefined);
+    if (!this.active.size) return;
+    let timer: NodeJS.Timeout | undefined;
+    const timedOut = await Promise.race([
+      Promise.all([...this.active.values()].map((a) => a.done)).then(() => false),
+      new Promise<boolean>((r) => (timer = setTimeout(() => r(true), this.config.worker.shutdownGraceMs))),
+    ]);
+    clearTimeout(timer);
+    if (timedOut) await this.requeueActive();
   }
 
-  /** 认领一批排队任务并处理完毕；返回处理的任务数（测试中可直接调用） */
+  /** 认领排队任务并处理完毕；返回认领的任务数（测试中直接调用，后台循环关闭时不会自动补位） */
   async runOnce(): Promise<number> {
     await this.recoverStale();
+    const n = await this.fill();
+    await Promise.all([...this.active.values()].map((a) => a.done));
+    return n;
+  }
+
+  /** 各模态正在处理的任务数 */
+  activeCounts(): Record<Modality, number> {
+    const counts = { image: 0, video: 0, text: 0, audio: 0 };
+    for (const { task } of this.active.values()) counts[task.modality]++;
+    return counts;
+  }
+
+  /** 按各模态的空闲槽位认领任务并开始处理（不等待处理完成）。同一时刻只有一次认领在进行，期间的补位请求在其后合并执行 */
+  private fill(): Promise<number> {
+    if (this.claiming) {
+      this.refill = true;
+      return this.claiming;
+    }
+    this.claiming = this.claim().finally(() => {
+      this.claiming = undefined;
+      if (this.refill && this.looping && !this.stopped) {
+        this.refill = false;
+        void this.fill().catch(() => undefined);
+      }
+    });
+    return this.claiming;
+  }
+
+  private async claim(): Promise<number> {
+    if (this.stopped) return 0;
+    const counts = this.activeCounts();
+    const free = MODALITIES.map((m) => [m, this.config.worker.concurrency[m] - counts[m]] as const).filter(([, n]) => n > 0);
+    if (!free.length) return 0;
     const claimed = await this.db.query<TaskRow>(
       `UPDATE generation_tasks SET status = 'running', attempt = attempt + 1, started_at = now(), progress = 0
-       WHERE id IN (SELECT id FROM generation_tasks WHERE status = 'queued' ORDER BY queue, created_at LIMIT $1 FOR UPDATE SKIP LOCKED)
-       RETURNING *`,
-      [this.config.worker.concurrency],
+        WHERE id IN (
+          SELECT c.id FROM unnest($1::text[], $2::int[]) AS m(modality, n)
+          CROSS JOIN LATERAL (
+            SELECT id FROM generation_tasks WHERE status = 'queued' AND modality = m.modality
+             ORDER BY queue, created_at LIMIT m.n FOR UPDATE SKIP LOCKED
+          ) c)
+        RETURNING *`,
+      [free.map(([m]) => m), free.map(([, n]) => n)],
     );
-    await Promise.all(claimed.map((t) => this.process(t)));
+    for (const t of claimed) this.start(t);
     return claimed.length;
+  }
+
+  private start(task: TaskRow) {
+    const done = this.process(task)
+      .catch((e) => this.logger.error(`[${task.id}] 处理异常`, e instanceof Error ? e.stack : String(e)))
+      .finally(() => {
+        this.active.delete(task.id);
+        if (this.looping && !this.stopped) void this.fill().catch(() => undefined);
+      });
+    this.active.set(task.id, { task, done });
+  }
+
+  private async requeueActive() {
+    for (const { task } of this.active.values()) {
+      const r = await this.db.query(
+        `UPDATE generation_tasks SET status = 'queued', progress = 0 WHERE id = $1 AND status IN ('running', 'post_processing') AND attempt = $2 RETURNING id`,
+        [task.id, task.attempt],
+      );
+      if (r.length) this.logger.warn(`[${task.id}] 停机时仍未完成，已重新排队`);
+    }
   }
 
   private async process(task: TaskRow) {
