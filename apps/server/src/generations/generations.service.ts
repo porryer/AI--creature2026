@@ -31,7 +31,6 @@ import { ParamsSchema, RoutingSchema } from '../gateway/gateway.module';
 import { ModelGateway } from '../gateway/model-gateway.service';
 import { ModerationService } from '../safety/moderation.service';
 import { StorageService } from '../storage/storage.service';
-import { SlidingWindowLimiter } from '../common/rate-limit';
 import { AppConfig, CONFIG } from '../config';
 
 /** 涂抹区域（PNG data URL）的长度上限，约 730 KB 的图片 */
@@ -106,8 +105,6 @@ export function ledgerMemo(t: Pick<TaskRow, 'modality' | 'params'>, modelName: s
 
 @Injectable()
 export class GenerationsService {
-  private readonly limiter: SlidingWindowLimiter;
-
   constructor(
     @Inject(CONFIG) private readonly config: AppConfig,
     @Inject(DB) private readonly db: Db,
@@ -118,7 +115,11 @@ export class GenerationsService {
     private readonly bus: EventBus,
     private readonly storage: StorageService,
   ) {
-    this.limiter = new SlidingWindowLimiter(config.generationRatePerMin, 60_000);
+    // 其他实例广播任务事件时，本实例据此读取任务推送给自己的连接
+    bus.setTaskLoader(async (userId, taskId) => {
+      const r = await this.row(userId, taskId);
+      return r ? this.toDTO(r) : null;
+    });
   }
 
   async create(userId: string, rawBody: unknown, idemKey: string | undefined): Promise<{ task: TaskDTO; replay: boolean }> {
@@ -132,11 +133,7 @@ export class GenerationsService {
       return { task: await this.toDTO(existing), replay: true };
     }
 
-    // 防刷：每分钟提交次数与同时进行中的任务数（重放不计入）
-    const wait = this.limiter.take(userId);
-    if (wait) throw Errors.rateLimited(`提交太频繁，请 ${wait} 秒后再试`, wait);
-    const [{ n }] = await this.db.query<{ n: number }>(`SELECT COUNT(*)::int AS n FROM generation_tasks WHERE user_id = $1 AND status IN ('queued', 'running', 'post_processing')`, [userId]);
-    if (n >= this.config.maxInflightTasks) throw Errors.rateLimited(`进行中的任务已有 ${n} 个，请等部分完成后再提交`, 10);
+    await this.checkRate(userId);
 
     const imageEdit = body.modality === 'image' && body.operation === 'edit';
     const edit = imageEdit ? await this.checkEdit(userId, body) : null;
@@ -230,6 +227,26 @@ export class GenerationsService {
     this.bus.emit(userId, { type: 'task.progress', task });
     await this.credits.notify(accountId);
     return { task, replay: false };
+  }
+
+  /**
+   * 防刷：近 1 分钟创建的任务数与同时进行中的任务数（按数据库计数，多实例共享；重放与被拒绝的提交不计入）。
+   * 先查后插，并发提交时可能略超上限，属于软限制。
+   */
+  private async checkRate(userId: string) {
+    const [r] = await this.db.query<{ inflight: number; recent: number; wait: number | null }>(
+      `SELECT COUNT(*) FILTER (WHERE status IN ('queued', 'running', 'post_processing'))::int AS inflight,
+              COUNT(*) FILTER (WHERE created_at > now() - interval '1 minute')::int AS recent,
+              EXTRACT(EPOCH FROM MIN(created_at) FILTER (WHERE created_at > now() - interval '1 minute') + interval '1 minute' - now())::float AS wait
+         FROM generation_tasks
+        WHERE user_id = $1 AND (status IN ('queued', 'running', 'post_processing') OR created_at > now() - interval '1 minute')`,
+      [userId],
+    );
+    if (r.recent >= this.config.generationRatePerMin) {
+      const wait = Math.max(1, Math.ceil(r.wait ?? 60));
+      throw Errors.rateLimited(`提交太频繁，请 ${wait} 秒后再试`, wait);
+    }
+    if (r.inflight >= this.config.maxInflightTasks) throw Errors.rateLimited(`进行中的任务已有 ${r.inflight} 个，请等部分完成后再提交`, 10);
   }
 
   /**

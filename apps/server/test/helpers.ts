@@ -18,6 +18,7 @@ import { GenerationWorker } from '../src/generations/worker.service';
 export async function makeApp(overrides: Partial<AppConfig> = {}) {
   const base = loadConfig({ NODE_ENV: 'test' });
   let databaseUrl: string | undefined;
+  let eventsChannel = base.eventsChannel;
   const pgUrl = process.env.TEST_DATABASE_URL;
   if (pgUrl) {
     const schema = `t_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
@@ -28,8 +29,10 @@ export async function makeApp(overrides: Partial<AppConfig> = {}) {
     const u = new URL(pgUrl);
     u.searchParams.set('options', `-c search_path=${schema}`);
     databaseUrl = u.toString();
+    // 通知频道是整个数据库共享的：每个测试应用用自己的频道，避免互相收到事件
+    eventsChannel = `ev_${schema}`;
   }
-  const config: AppConfig = { ...base, databaseUrl, storageDir: mkdtempSync(join(tmpdir(), 'creature-files-')), ...overrides };
+  const config: AppConfig = { ...base, databaseUrl, eventsChannel, storageDir: mkdtempSync(join(tmpdir(), 'creature-files-')), ...overrides };
   const app = await createApp(config);
   await app.init();
   const http = () => request(app.getHttpServer());

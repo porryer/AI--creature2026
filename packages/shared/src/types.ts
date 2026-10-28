@@ -356,4 +356,6 @@ export type ServerEvent =
   | { type: 'task.progress'; task: TaskDTO }
   | { type: 'task.succeeded'; task: TaskDTO }
   | { type: 'task.failed'; task: TaskDTO }
-  | { type: 'credits.changed'; credits: BalanceDTO };
+  | { type: 'credits.changed'; credits: BalanceDTO }
+  /** 推送可能有遗漏（如服务端事件监听重连）：客户端应重新拉取进行中的任务与余额 */
+  | { type: 'sync' };

@@ -3,6 +3,7 @@
 //
 //   node scripts/loadtest.mjs --base http://localhost:8080 --scenario submit --users 200 --concurrency 100 --duration 30
 //   node scripts/loadtest.mjs --base http://localhost:8080 --scenario read --users 50 --concurrency 100 --duration 30
+//   加 --sse true 时每个用户保持一条服务端推送连接（与真实用户一致），并统计收到的事件
 //
 // 需要目标环境：短信为开发模式（验证码随响应返回）、设置了 ADMIN_PHONES（用于对账）；
 // 压测提交接口时调高 GENERATION_RATE_PER_MIN / MAX_INFLIGHT_TASKS，否则会被按用户限流。
@@ -23,6 +24,7 @@ const USERS = Number(args.users ?? 100);
 const CONCURRENCY = Number(args.concurrency ?? 50);
 const DURATION = Number(args.duration ?? 30) * 1000;
 const ADMIN = args.admin ?? process.env.LOADTEST_ADMIN_PHONE;
+const SSE = args.sse === 'true';
 
 async function request(method, path, token, body, headers = {}) {
   const res = await fetch(BASE + path, {
@@ -42,6 +44,28 @@ async function login(phone) {
   return r.data.access_token;
 }
 
+/** 打开一条推送连接，按事件类型计数；返回用于断开的 AbortController */
+async function openStream(token, counts) {
+  const ctrl = new AbortController();
+  const res = await fetch(`${BASE}/v1/events?access_token=${token}`, { signal: ctrl.signal, headers: { accept: 'text/event-stream' } });
+  if (res.status !== 200) throw new Error(`推送连接失败（${res.status}）`);
+  (async () => {
+    const dec = new TextDecoder();
+    let buf = '';
+    try {
+      for await (const chunk of res.body) {
+        buf += dec.decode(chunk, { stream: true });
+        for (let i = buf.indexOf('\n\n'); i >= 0; i = buf.indexOf('\n\n')) {
+          const type = /"type":"([a-z.]+)"/.exec(buf.slice(0, i))?.[1];
+          if (type) counts.set(type, (counts.get(type) ?? 0) + 1);
+          buf = buf.slice(i + 2);
+        }
+      }
+    } catch {}
+  })();
+  return ctrl;
+}
+
 const pct = (sorted, p) => (sorted.length ? sorted[Math.min(sorted.length - 1, Math.floor((p / 100) * sorted.length))] : 0);
 
 async function main() {
@@ -53,6 +77,9 @@ async function main() {
     tokens.push(...(await Promise.all(batch)));
   }
   console.log(`已登录 ${tokens.length} 个用户`);
+  const events = new Map();
+  const streams = SSE ? await Promise.all(tokens.map((t) => openStream(t, events))) : [];
+  if (SSE) console.log(`已建立 ${streams.length} 条推送连接`);
 
   const latencies = [];
   const codes = new Map();
@@ -95,6 +122,11 @@ async function main() {
   console.log(`吞吐 ${(sorted.length / elapsed).toFixed(1)} 次/秒（成功 ${(ok / elapsed).toFixed(1)} 次/秒）`);
   console.log(`延迟 p50 ${pct(sorted, 50).toFixed(0)}ms · p95 ${pct(sorted, 95).toFixed(0)}ms · p99 ${pct(sorted, 99).toFixed(0)}ms · 最大 ${sorted.at(-1)?.toFixed(0) ?? 0}ms`);
   console.log('状态码：', Object.fromEntries(codes));
+  if (SSE) {
+    await new Promise((r) => setTimeout(r, 3000));
+    streams.forEach((c) => c.abort());
+    console.log('推送事件：', Object.fromEntries(events));
+  }
 
   if (ADMIN) {
     const admin = await login(ADMIN);

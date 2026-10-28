@@ -33,4 +33,13 @@ node scripts/loadtest.mjs --base http://localhost:8080 --scenario read --users 5
 
 ## 横向扩展
 
-`docker compose up -d --scale server=2` 后重启 `web`（nginx 启动时解析后端地址）。生成任务以数据库为队列、`FOR UPDATE SKIP LOCKED` 认领，多实例可以同时处理；但服务端推送目前在进程内分发，**多实例时用户可能收不到其他实例上 Worker 的进度推送**，扩展到多实例前需要先把事件总线换成 PostgreSQL LISTEN/NOTIFY 或 Redis Pub/Sub（见 docs/09-launch-readiness.md）。
+`docker compose up -d --scale server=2` 后重启 `web`（nginx 只在启动时解析后端地址，扩缩容后需要重启才能看到新实例；同一实例重启不需要）。
+
+多个后端实例共用同一个 PostgreSQL 即可，不需要额外组件：
+
+- 生成任务以数据库为队列、`FOR UPDATE SKIP LOCKED` 认领，各实例的 Worker 同时处理；
+- 推送通过 PostgreSQL `LISTEN / NOTIFY` 在实例之间转发，用户的推送连接与处理任务的实例可以不同；
+- 冻结 / 封禁账号会通知所有实例立即失效；提交限流按数据库计数，各实例共享同一个额度；
+- 启动时的数据库迁移持有咨询锁，多个实例同时启动不会冲突。
+
+注意：每个实例会占用一条常驻的数据库连接用于 `LISTEN`。如果在后端与数据库之间加 PgBouncer，这条连接必须走 session 模式（transaction 模式不支持 `LISTEN`）。多个环境共用一个数据库时，用 `EVENTS_CHANNEL` 区分通知频道。验证方法与压测结果见 [docs/09-launch-readiness.md](../docs/09-launch-readiness.md#7-多实例部署)。

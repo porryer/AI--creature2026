@@ -89,15 +89,18 @@ async function raw<T>(method: string, path: string, body?: unknown, headers: Rec
   return data as T;
 }
 
-/** 用 Cookie 中的刷新令牌换取新的访问令牌；并发调用只发一次请求 */
+/**
+ * 用 Cookie 中的刷新令牌换取新的访问令牌；并发调用只发一次请求。
+ * 只有服务端明确拒绝（401 / 403）时才退出登录；网络中断或服务暂时不可用（如实例滚动重启）时保留当前令牌。
+ */
 export function refresh(): Promise<boolean> {
   refreshing ??= raw<{ access_token: string }>('POST', '/auth/refresh', {})
     .then((r) => {
       setToken(r.access_token);
       return true;
     })
-    .catch(() => {
-      setToken(null);
+    .catch((e) => {
+      if (e instanceof ApiError && (e.status === 401 || e.status === 403)) setToken(null);
       return false;
     })
     .finally(() => {
@@ -202,17 +205,22 @@ export const api = {
 
 /**
  * 订阅服务端推送。EventSource 无法设置请求头，访问令牌通过查询参数传递；
- * 断线或令牌更新时自动重连。返回取消订阅函数。
+ * 断线或令牌更新时自动重连，重连后发出 sync（期间的事件可能已丢失）。返回取消订阅函数。
  */
 export function subscribeEvents(onEvent: (e: ServerEvent) => void): () => void {
   let es: EventSource | null = null;
   let retry: ReturnType<typeof setTimeout> | undefined;
   let closed = false;
+  let opened = false;
 
   const open = () => {
     if (closed || !accessToken) return;
     es?.close();
     es = new EventSource(`/v1/events?access_token=${encodeURIComponent(accessToken)}`);
+    es.onopen = () => {
+      if (opened) onEvent({ type: 'sync' });
+      opened = true;
+    };
     es.onmessage = (m) => {
       try {
         onEvent(JSON.parse(m.data) as ServerEvent);
@@ -223,8 +231,8 @@ export function subscribeEvents(onEvent: (e: ServerEvent) => void): () => void {
     es.onerror = () => {
       es?.close();
       clearTimeout(retry);
-      // 可能是访问令牌过期：刷新成功会触发令牌变更，从而重连
-      retry = setTimeout(() => void refresh(), 3000);
+      // 可能是访问令牌过期：刷新成功会触发令牌变更，从而重连；服务暂时不可用时保留登录状态，稍后再连
+      retry = setTimeout(() => void refresh().then((ok) => !ok && open()), 3000);
     };
   };
 

@@ -7,6 +7,7 @@ import { Errors } from '../common/errors';
 import { AuthedRequest, parse } from '../common/http';
 import { CreditsModule } from '../credits/credits.module';
 import { AuthGuard } from './auth.guard';
+import { UserStatusService } from './user-status.service';
 import { AuthService } from './auth.service';
 import { ConsoleSmsProvider, SMS_PROVIDER } from './sms.provider';
 
@@ -83,6 +84,7 @@ export class AuthController {
   providers: [
     AuthService,
     AuthGuard,
+    UserStatusService,
     {
       provide: SMS_PROVIDER,
       inject: [CONFIG],
@@ -93,6 +95,6 @@ export class AuthController {
       },
     },
   ],
-  exports: [AuthGuard, JwtModule],
+  exports: [AuthGuard, UserStatusService, JwtModule],
 })
 export class AuthModule {}

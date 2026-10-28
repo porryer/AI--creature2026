@@ -1,6 +1,6 @@
 import { Inject, Injectable } from '@nestjs/common';
 import { PLANS, type AdminUserDetailDTO, type AdminUserDTO, type Modality, type Page, type PlanCode, type TaskStatus, type UserStatus } from '@creature/shared';
-import { invalidateUserStatus } from '../auth/auth.guard';
+import { UserStatusService } from '../auth/user-status.service';
 import { decryptPhone, hmac, maskPhone, PHONE_RE } from '../auth/crypto';
 import { Errors } from '../common/errors';
 import { newId } from '../common/ids';
@@ -37,6 +37,7 @@ export class AdminUsersService {
     @Inject(DB) private readonly db: Db,
     @Inject(CONFIG) private readonly config: AppConfig,
     private readonly credits: CreditsService,
+    private readonly statuses: UserStatusService,
   ) {}
 
   /** q 可以是完整手机号、手机号后 4 位、昵称片段或用户 ID */
@@ -87,7 +88,7 @@ export class AdminUsersService {
     };
   }
 
-  /** 冻结 / 封禁会立即吊销该用户的全部登录会话，进行中的请求最迟 10 秒后失效 */
+  /** 冻结 / 封禁会立即吊销该用户的全部登录会话，并让所有实例上的访问令牌立即失效 */
   async setStatus(adminId: string, id: string, status: UserStatus, reason: string): Promise<AdminUserDetailDTO> {
     if (id === adminId) throw Errors.invalid('不能修改自己的账号状态');
     await this.db.tx(async (q) => {
@@ -99,7 +100,7 @@ export class AdminUsersService {
       if (status !== 'active') await q.query('UPDATE auth_sessions SET revoked_at = now() WHERE user_id = $1 AND revoked_at IS NULL', [id]);
       await this.audit(q, adminId, `user.${status === 'active' ? 'restore' : status === 'frozen' ? 'freeze' : 'ban'}`, id, { from: u.status, to: status, reason });
     });
-    invalidateUserStatus(id);
+    this.statuses.changed(id);
     return this.detail(id);
   }
 

@@ -49,6 +49,8 @@ export interface AppConfig {
   maxInflightTasks: number;
   /** 定时全量对账间隔（小时） */
   reconcileIntervalHours: number;
+  /** 多实例之间广播事件的 PostgreSQL 通知频道（同一数据库上的不同环境应使用不同频道） */
+  eventsChannel: string;
 }
 
 const DEV_SECRET = 'creature-dev-secret-do-not-use-in-production';
@@ -107,6 +109,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
     generationRatePerMin: num(env.GENERATION_RATE_PER_MIN, 30),
     maxInflightTasks: num(env.MAX_INFLIGHT_TASKS, 20),
     reconcileIntervalHours: num(env.RECONCILE_INTERVAL_HOURS, 24),
+    eventsChannel: env.EVENTS_CHANNEL || 'creature_events',
   };
 
   if (strict) {

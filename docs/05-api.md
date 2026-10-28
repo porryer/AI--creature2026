@@ -320,9 +320,10 @@ Content-Type: application/json
 { "type": "task.succeeded", "task": { "id": "tsk_…", "status": "succeeded", "outputs": [ { "asset_id": "ast_…", "url": "/v1/files/…", "content_id": "CRT-20261027-3FD0DEBA" } ] } }
 { "type": "task.failed",    "task": { "id": "tsk_…", "status": "failed", "error": { "code": "ALL_MODELS_FAILED", "message": "…已返还 12 积分" } } }
 { "type": "credits.changed", "credits": { "available": 1776, "frozen": 0, "expiring_soon": 20 } }
+{ "type": "sync" }
 ```
 
-`task` 字段与 `GET /generations/{id}` 的返回结构相同。画布多人协作上线时再引入 WebSocket（Yjs 协作通道）。
+`task` 字段与 `GET /generations/{id}` 的返回结构相同。推送不保证送达：`sync` 表示服务端的事件监听刚刚重连、期间的事件可能丢失，客户端应重新拉取进行中的任务与余额；客户端自己的连接断开重连后也应同样处理（前端在每次重连成功时执行）。多个后端实例时，用户的推送连接与处理任务的 Worker 可以在不同实例上（见 [09 上线准备 · 多实例部署](./09-launch-readiness.md#7-多实例部署)）。画布多人协作上线时再引入 WebSocket（Yjs 协作通道）。
 
 ### 3.4 Agent 对话（SSE）
 

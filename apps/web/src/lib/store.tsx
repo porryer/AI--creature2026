@@ -103,6 +103,8 @@ export const uid = (p: string) => `${p}${Date.now().toString(36)}${(seq++).toStr
 
 const MOD_WORDS = ['违规', '血腥', '暴恐', '色情'];
 const KIND_LABEL: Record<Modality, string> = { image: '图像', video: '视频', text: '文本', audio: '音频' };
+/** 已结束的任务状态：之后的推送不再触发提示 */
+const DONE_STATUSES: readonly string[] = ['succeeded', 'failed', 'blocked', 'canceled'];
 
 // ---------- 后端数据 → 前端模型 ----------
 
@@ -466,6 +468,7 @@ export function StoreProvider({ children }: { children: ReactNode }) {
   const ledgerTimer = useRef<number>(0);
   const onServerEvent = useCallback(
     (e: ServerEvent) => {
+      if (e.type === 'sync') return;
       if (e.type === 'credits.changed') {
         dispatch({ type: 'set_credits', available: e.credits.available, frozen: e.credits.frozen, expiringSoon: e.credits.expiring_soon });
         window.clearTimeout(ledgerTimer.current);
@@ -474,7 +477,7 @@ export function StoreProvider({ children }: { children: ReactNode }) {
       }
       const task = taskFromDTO(e.task);
       const known = ref.current.tasks.find((t) => t.id === task.id);
-      const wasDone = known && ['succeeded', 'failed', 'blocked', 'canceled'].includes(known.status);
+      const wasDone = known && DONE_STATUSES.includes(known.status);
       dispatch({ type: 'upsert_task', task });
       if (wasDone) return;
       const quiet = task.source === 'canvas' || task.source === 'agent';
@@ -490,6 +493,17 @@ export function StoreProvider({ children }: { children: ReactNode }) {
     },
     [toast, notice],
   );
+
+  /** 推送可能有遗漏（断线重连、服务端事件监听重连）：重新拉取余额与进行中的任务，按普通事件处理 */
+  const resync = useCallback(async (handle: (e: ServerEvent) => void) => {
+    const pending = new Set(ref.current.tasks.filter((t) => !DONE_STATUSES.includes(t.status)).map((t) => t.id));
+    const [balance, page] = await Promise.all([api.balance(), pending.size ? api.generations() : null]);
+    handle({ type: 'credits.changed', credits: balance });
+    for (const dto of page?.data ?? []) {
+      if (!pending.has(dto.id)) continue;
+      handle({ type: dto.status === 'succeeded' ? 'task.succeeded' : DONE_STATUSES.includes(dto.status) ? 'task.failed' : 'task.progress', task: dto });
+    }
+  }, []);
 
   useEffect(() => {
     if (BACKEND !== 'api') return;
@@ -509,8 +523,8 @@ export function StoreProvider({ children }: { children: ReactNode }) {
 
   useEffect(() => {
     if (BACKEND !== 'api' || state.auth !== 'authed') return;
-    return subscribeEvents(onServerEvent);
-  }, [state.auth, onServerEvent]);
+    return subscribeEvents((e) => (e.type === 'sync' ? void resync(onServerEvent).catch(() => undefined) : onServerEvent(e)));
+  }, [state.auth, onServerEvent, resync]);
 
   // 账号被后台限制：退回登录页
   useEffect(() => {

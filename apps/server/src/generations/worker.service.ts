@@ -1,5 +1,5 @@
 import { Inject, Injectable, Logger, OnApplicationBootstrap, OnApplicationShutdown } from '@nestjs/common';
-import { estimateCredits, findModel, type Modality } from '@creature/shared';
+import { estimateCredits, findModel, type Modality, type TaskStatus } from '@creature/shared';
 import { AppConfig, CONFIG } from '../config';
 import { newId } from '../common/ids';
 import { CreditsService } from '../credits/credits.service';
@@ -77,7 +77,7 @@ export class GenerationWorker implements OnApplicationBootstrap, OnApplicationSh
     const primary = findModel(task.model_code);
     try {
       if (!primary) throw new GatewayError('MODEL_NOT_FOUND', `模型 ${task.model_code} 不存在`, []);
-      await this.publish(task.id, task.user_id);
+      await this.publish(task.id, task.user_id, 'running');
 
       // 进度更新串行写库，每 10% 推送一次
       let last = 0;
@@ -97,7 +97,7 @@ export class GenerationWorker implements OnApplicationBootstrap, OnApplicationSh
         [task.id, result.model.code, task.attempt],
       );
       if (!owned.length) return;
-      await this.publish(task.id, task.user_id);
+      await this.publish(task.id, task.user_id, 'post_processing');
 
       // 输出审核
       for (const out of result.outputs) {
@@ -214,11 +214,12 @@ export class GenerationWorker implements OnApplicationBootstrap, OnApplicationSh
 
   private async setProgress(task: TaskRow, pct: number) {
     await this.db.query(`UPDATE generation_tasks SET progress = $2 WHERE id = $1 AND status = 'running' AND attempt = $3`, [task.id, pct, task.attempt]);
-    await this.publish(task.id, task.user_id);
+    await this.publish(task.id, task.user_id, 'running');
   }
 
-  private async publish(taskId: string, userId: string) {
-    if (!this.bus.listenerCount(userId)) return;
+  /** 推送进度：本实例有该用户的连接时读取任务并推送（同时通知其他实例），否则只通知其他实例 */
+  private async publish(taskId: string, userId: string, status: TaskStatus) {
+    if (!this.bus.listenerCount(userId)) return this.bus.broadcastTask(userId, 'task.progress', { id: taskId, status });
     const row = await this.generations.row(userId, taskId);
     if (row) this.bus.emit(userId, { type: 'task.progress', task: await this.generations.toDTO(row) });
   }

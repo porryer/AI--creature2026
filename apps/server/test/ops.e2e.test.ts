@@ -33,13 +33,14 @@ describe('上线准备：安全响应头、指标、限流、对账', () => {
     await submit(t, u.token, { modality: 'text', prompt: '文案一' }, 'idem-rate-0001').expect(200);
     await submit(t, u.token, { modality: 'text', prompt: '文案二' }).expect(202);
     await submit(t, u.token, { modality: 'text', prompt: '文案三' }).expect(202);
-    // 已有 3 个进行中（Worker 在测试中不自动运行）
+    // 已有 3 个进行中（Worker 在测试中不自动运行）；被拒绝的提交不计入每分钟次数
     const inflight = await submit(t, u.token, { modality: 'text', prompt: '文案四' }).expect(429);
     expect(inflight.body.error.message).toContain('进行中的任务');
     await drain(t);
-    // 第 5 次提交超出每分钟 4 次
-    await submit(t, u.token, { modality: 'text', prompt: '文案五' }).expect(429);
+    await submit(t, u.token, { modality: 'text', prompt: '文案五' }).expect(202);
+    // 1 分钟内已创建 4 个任务，再提交超出每分钟 4 次
     const r = await submit(t, u.token, { modality: 'text', prompt: '文案六' }).expect(429);
+    expect(r.body.error.message).toContain('提交太频繁');
     expect(r.body.error.code).toBe('RATE_LIMITED');
     expect(Number(r.headers['retry-after'])).toBeGreaterThan(0);
     // 其他用户不受影响
