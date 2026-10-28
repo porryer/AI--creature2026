@@ -37,6 +37,7 @@
 | 400 | `INVALID_ARGUMENT` | 参数校验失败，`details.fields` 列出字段 |
 | 401 | `UNAUTHENTICATED` | 未登录或令牌过期 |
 | 403 | `PERMISSION_DENIED` | 无权访问该资源 |
+| 403 | `ACCOUNT_SUSPENDED` | 账号已被后台冻结或封禁，客户端应退出登录 |
 | 403 | `PHONE_BINDING_REQUIRED` | 未绑定手机号，不能使用生成功能 |
 | 402 | `INSUFFICIENT_CREDITS` | 积分不足 |
 | 403 | `PLAN_FEATURE_REQUIRED` | 当前套餐不支持该功能（如 4K），`details.required_plan` |
@@ -46,7 +47,7 @@
 | 429 | `RATE_LIMITED` | 请求过于频繁 |
 | 503 | `MODEL_UNAVAILABLE` | 所选模型及备选模型均不可用 |
 
-### 1.3 实现状态（Sprint 1–3）
+### 1.3 实现状态（Sprint 1–4）
 
 已实现（`apps/server`，带集成测试）：
 
@@ -55,14 +56,14 @@
 | 认证 | `POST /auth/sms/send`、`POST /auth/sms/login`、`POST /auth/refresh`、`POST /auth/logout` |
 | 用户 | `GET /me`（含 `role`）、`PATCH /me` |
 | 模型 | `GET /models`、`POST /models/route` |
-| 生成 | `POST /generations`、`GET /generations`、`GET /generations/{id}`、`POST /generations/{id}/cancel` |
+| 生成 | `POST /generations`（含图像编辑，见 3.1）、`GET /generations`、`GET /generations/{id}`、`POST /generations/{id}/cancel` |
 | 推送 | `GET /events`（SSE，替代 3.3 节的 WebSocket，见下） |
 | 资产 | `GET /assets?kind=&favorite=&q=&folder=`（`folder=none` 为未归档）、`GET /assets/{id}`、`PATCH /assets/{id}`、`DELETE /assets/{id}`（同时撤回广场发布）、`POST /assets/move`、`GET /assets/{id}/download`、`GET /files/{token}`（签名文件；带 `dl` 参数时以附件下载） |
 | 文件夹 | `GET /asset-folders`（含作品数）、`POST /asset-folders`、`PATCH /asset-folders/{id}`、`DELETE /asset-folders/{id}`（作品移回未归档） |
 | 上传 | `POST /assets/uploads`、`PUT /uploads/{id}?exp=&sig=`（签名地址，无需登录态）、`POST /assets/uploads/{id}/complete`，见 3.7 |
 | 项目与画布 | `GET /projects`、`POST /projects`（同时创建画布）、`PATCH /projects/{id}`、`DELETE /projects/{id}`、`GET /canvases/latest`、`GET /canvases/{id}`、`PUT /canvases/{id}`，见 3.8 |
 | 社区 | `GET /feed?tab=recommend\|latest\|hot\|mine&kind=&cursor=`、`POST /posts`、`GET /posts/{id}`、`DELETE /posts/{id}`（作者撤回）、`PUT` / `DELETE /posts/{id}/like`、`POST /posts/{id}/remix`、`POST /reports`，见 3.9 |
-| 管理后台 | `GET /admin/overview`、`GET /admin/models`、`GET /admin/review-queue`、`POST /admin/posts/{id}/decision`（需 `role = admin`），见 3.10 |
+| 管理后台 | `GET /admin/overview`、`GET /admin/models`、`GET /admin/review-queue`、`POST /admin/posts/{id}/decision`、`GET /admin/users`、`GET /admin/users/{id}`、`POST /admin/users/{id}/status`、`POST /admin/users/{id}/credits`（需 `role = admin`），见 3.10 |
 | 积分 | `GET /credits/balance`、`GET /credits/ledger` |
 | 订单 | `POST /orders`、`GET /orders/{id}`、`POST /orders/{id}/mock-pay`（仅 `PAYMENTS_MODE=mock`） |
 | 运维 | `GET /healthz` |
@@ -254,6 +255,18 @@ Content-Type: application/json
 
 参考图不改变计价；校验失败返回 `400`，不会冻结积分。品牌套件与角色卡引用（`context`）随角色库、品牌套件一起实现。
 
+**图像编辑**：`modality: "image"`、`operation: "edit"`，`references` 只能有一张 `role: "source"` 的源图（本人的图像资产，上传素材也可以），固定由编辑模型 `creature-edit` 处理（指定其他模型返回 `400`，不切换备选模型），按次计费：
+
+| `params.tool` | 说明 | 其他参数 | 积分 |
+|---|---|---|---|
+| `inpaint` 局部重绘 | 涂抹区域内按描述重新生成 | 必填 `prompt` 与 `mask` | 2 |
+| `outpaint` 扩图 | 向四周延展到新比例 | 必填 `params.ratio`（与原图不同），`prompt` 选填 | 2 |
+| `erase` 消除 | 去掉涂抹区域的物体并补全背景 | 必填 `mask` | 2 |
+| `cutout` 抠图 | 保留主体，背景透明 | — | 2 |
+| `upscale` 超分 | 放大并增强细节 | `params.scale`：2（默认）或 4，放大后边长不超过 8192 | 2 / 4 |
+
+`mask` 为 PNG data URL（黑底，白色为要修改的区域，约 730 KB 以内），服务端以私有文件保存，不对外提供访问地址。`prompt` 省略时任务名为"工具 · 源图标题"。编辑结果属于生成内容，同样添加显式与隐式 AI 标识（包括对上传素材的编辑）。
+
 响应 `202 Accepted`：
 
 ```json
@@ -444,6 +457,9 @@ data: {"session_status":"awaiting_confirm"}
 - `GET /v1/admin/models`：每个模型的网关 5 分钟窗口（样本数、成功率、是否熔断）与近 24 小时任务数、成功率、P95 耗时。
 - `GET /v1/admin/review-queue`：审核中、被举报隐藏或有未处理举报的作品，附机审标签与举报原因统计；审核员可看到未公开的提示词。
 - `POST /v1/admin/posts/{id}/decision` `{ "action": "approve" | "remove", "note": "…" }`：通过时发布并驳回举报（举报计数清零），下架时隐藏并将举报标记为成立；每次处理写一条人工审核记录与审计日志。
+- `GET /v1/admin/users?q=&status=&cursor=`：`q` 可以是完整手机号（按 HMAC 索引精确匹配）、手机号后 4 位、昵称片段或用户 ID。`GET /v1/admin/users/{id}` 返回积分、任务与发布统计、最近 20 条积分流水、最近 10 个任务和针对该用户的操作记录。
+- `POST /v1/admin/users/{id}/status` `{ "status": "active" | "frozen" | "banned", "reason": "…" }`：冻结 / 封禁时吊销该用户全部刷新令牌，访问令牌在本实例内立即失效、其他实例最迟 10 秒后失效（返回 `403 ACCOUNT_SUSPENDED`），也无法再登录；不能修改自己或其他管理员。
+- `POST /v1/admin/users/{id}/credits` `{ "delta": 50, "reason": "生成异常补偿", "request_id": "…" }`：增加时发放一年有效的积分批次，扣减时按到期顺序扣除，可用余额不足返回 `400`；单次不超过 100000，同一 `request_id` 只生效一次；流水类型为 `adjust`，用户在自己的积分明细中可见。
 
 ## 4. 开放 API（P2）
 

@@ -99,7 +99,7 @@ export class AuthService {
   private async findOrCreateUser(phone: string, ph: string): Promise<{ userId: string; isNew: boolean }> {
     const existing = await this.db.query<{ id: string; status: string }>('SELECT id, status FROM users WHERE phone_hash = $1', [ph]);
     if (existing[0]) {
-      if (existing[0].status !== 'active') throw Errors.forbidden('账号已被限制使用，请联系客服');
+      if (existing[0].status !== 'active') throw Errors.suspended();
       return { userId: existing[0].id, isNew: false };
     }
     const userId = newId('usr');
@@ -135,7 +135,7 @@ export class AuthService {
       throw Errors.unauthenticated('登录状态已失效，请重新登录');
     }
     if (new Date(s.expires_at).getTime() < Date.now()) throw Errors.unauthenticated('登录已过期，请重新登录');
-    if (s.status !== 'active') throw Errors.forbidden('账号已被限制使用，请联系客服');
+    if (s.status !== 'active') throw Errors.suspended();
     const tokens = await this.issue(s.user_id, s.family_id, userAgent, s.id);
     return { ...tokens, userId: s.user_id };
   }

@@ -21,7 +21,12 @@ export interface ModelInfo {
   desc: string;
   maxDuration?: number;
   nativeAudio?: boolean;
+  /** 只用于图像编辑，不参与生成路由，也不出现在模型选择里 */
+  editOnly?: boolean;
 }
+
+/** 图像编辑工具：局部重绘、扩图、消除、抠图、超分 */
+export type EditTool = 'inpaint' | 'outpaint' | 'erase' | 'cutout' | 'upscale';
 
 /** 生成参数。不同模态只使用其中一部分字段 */
 export interface GenerationParams {
@@ -39,6 +44,10 @@ export interface GenerationParams {
   tone?: string;
   /** 文本编辑操作：改写 / 扩写 / 缩写 / 换语气 */
   transform?: string;
+  /** 图像编辑工具（operation = edit） */
+  tool?: EditTool;
+  /** 超分倍数 */
+  scale?: 2 | 4;
 }
 
 export type Operation = 'generate' | 'edit';
@@ -111,7 +120,8 @@ export interface DownloadDTO {
   filename: string;
 }
 
-export type ReferenceRole = 'style' | 'subject' | 'character' | 'first_frame' | 'last_frame';
+/** source：图像编辑的源图 */
+export type ReferenceRole = 'style' | 'subject' | 'character' | 'first_frame' | 'last_frame' | 'source';
 
 export interface ReferenceDTO {
   asset_id: string;
@@ -285,6 +295,27 @@ export interface AdminModelDTO {
   tasks_24h: number;
   success_rate_24h: number | null;
   p95_sec_24h: number | null;
+}
+
+export type UserStatus = 'active' | 'frozen' | 'banned';
+
+export interface AdminUserDTO {
+  id: string;
+  nickname: string;
+  phone_masked: string;
+  status: UserStatus;
+  role: 'user' | 'admin';
+  plan: { code: string; name: string; expires_at: string | null };
+  credits: { available: number; frozen: number };
+  tasks_total: number;
+  created_at: string;
+}
+
+export interface AdminUserDetailDTO extends AdminUserDTO {
+  stats: { tasks_succeeded: number; tasks_failed: number; assets: number; posts: number; reports_received: number };
+  ledger: LedgerEntryDTO[];
+  recent_tasks: { id: string; modality: Modality; prompt: string; status: TaskStatus; credits: number; created_at: string }[];
+  audit: { action: string; actor_nickname: string; detail: Record<string, unknown>; created_at: string }[];
 }
 
 export interface ReviewItemDTO {

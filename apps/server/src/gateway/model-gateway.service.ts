@@ -73,7 +73,7 @@ export class ModelGateway {
   /** 校验用户手动指定的模型 */
   resolvePinned(code: string, modality: Modality): ModelInfo | null {
     const m = findModel(code);
-    if (!m || m.modality !== modality || !this.adapterFor(m)) return null;
+    if (!m || m.modality !== modality || m.editOnly || !this.adapterFor(m)) return null;
     return m;
   }
 
@@ -84,7 +84,8 @@ export class ModelGateway {
 
   async generate(primary: ModelInfo, req: Omit<AdapterRequest, 'model' | 'candidateIndex' | 'signal'>, onProgress: (pct: number) => void): Promise<GatewayResult> {
     // 配乐与配音不能互为备选
-    const pool = primary.code === 'creature-music' ? [] : this.available(primary.modality);
+    // 配乐与图像编辑没有可替代的模型，不切换备选
+    const pool = primary.code === 'creature-music' || primary.editOnly ? [] : this.available(primary.modality);
     const candidates = [primary, ...fallbackModels(primary, pool)]
       .filter((m, i) => i === 0 || !this.isOpen(m.code))
       .slice(0, MAX_CANDIDATES);

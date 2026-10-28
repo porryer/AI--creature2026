@@ -33,6 +33,8 @@ export interface Task {
   /** 后端返回的路由说明（含自动切换备选模型的说明） */
   routingReason?: string;
   source: 'studio' | 'canvas' | 'agent' | 'template';
+  /** 图像编辑任务的源图 */
+  sourceAssetId?: string;
   count: number;
   /** 模拟用：排队时长与生成时长（毫秒） */
   queueMs: number;

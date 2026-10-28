@@ -1,6 +1,8 @@
 import type {
   AdminModelDTO,
   AdminOverviewDTO,
+  AdminUserDetailDTO,
+  AdminUserDTO,
   ApiErrorBody,
   AssetDTO,
   BalanceDTO,
@@ -25,6 +27,7 @@ import type {
   ServerEvent,
   TaskDTO,
   UploadTicketDTO,
+  UserStatus,
 } from '@creature/shared';
 
 /** api：连接后端；mock：本地模拟数据的离线演示 */
@@ -45,6 +48,15 @@ export class ApiError extends Error {
 let accessToken: string | null = null;
 let refreshing: Promise<boolean> | null = null;
 const tokenListeners = new Set<(token: string | null) => void>();
+const suspendedListeners = new Set<() => void>();
+
+/** 账号被后台冻结或封禁时触发（任意接口返回 ACCOUNT_SUSPENDED） */
+export const onAccountSuspended = (fn: () => void) => {
+  suspendedListeners.add(fn);
+  return () => {
+    suspendedListeners.delete(fn);
+  };
+};
 
 export const onTokenChange = (fn: (token: string | null) => void) => {
   tokenListeners.add(fn);
@@ -67,6 +79,10 @@ async function raw<T>(method: string, path: string, body?: unknown, headers: Rec
   const data = await res.json().catch(() => null);
   if (!res.ok) {
     const err = (data as ApiErrorBody | null)?.error;
+    if (err?.code === 'ACCOUNT_SUSPENDED') {
+      setToken(null);
+      suspendedListeners.forEach((fn) => fn());
+    }
     throw new ApiError(res.status, err?.code ?? `HTTP_${res.status}`, err?.message ?? '网络异常，请稍后重试', err?.details);
   }
   return data as T;
@@ -112,6 +128,8 @@ export interface CreateGenerationBody {
   routing: { strategy: RoutingStrategy; pinned_model?: string | null };
   source?: TaskDTO['source'];
   references?: ReferenceDTO[];
+  /** 图像编辑的涂抹区域（PNG data URL） */
+  mask?: string;
 }
 
 export const api = {
@@ -166,6 +184,10 @@ export const api = {
   adminModels: () => call<{ data: AdminModelDTO[] }>('GET', '/admin/models'),
   reviewQueue: () => call<{ data: ReviewItemDTO[] }>('GET', '/admin/review-queue'),
   decide: (postId: string, action: 'approve' | 'remove', note?: string) => call<PostDTO>('POST', `/admin/posts/${postId}/decision`, { action, note }),
+  adminUsers: (f: { q?: string; status?: UserStatus; cursor?: string | null }) => call<Page<AdminUserDTO>>('GET', `/admin/users${qs({ limit: 30, ...f })}`),
+  adminUser: (id: string) => call<AdminUserDetailDTO>('GET', `/admin/users/${id}`),
+  setUserStatus: (id: string, status: UserStatus, reason: string) => call<AdminUserDetailDTO>('POST', `/admin/users/${id}/status`, { status, reason }),
+  adjustCredits: (id: string, delta: number, reason: string, requestId: string) => call<AdminUserDetailDTO>('POST', `/admin/users/${id}/credits`, { delta, reason, request_id: requestId }),
 
   projects: () => call<{ data: ProjectDTO[] }>('GET', '/projects'),
   createProject: (name: string, doc?: CanvasDocDTO) => call<CanvasDTO>('POST', '/projects', { name, doc }),

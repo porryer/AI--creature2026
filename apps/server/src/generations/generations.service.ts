@@ -1,8 +1,26 @@
 import { Inject, Injectable } from '@nestjs/common';
-import { estimateCredits, findModel, normalizeParams, PLANS, TIER_LABEL, type GenerationParams, type Modality, type Operation, type PlanCode, type ReferenceDTO, type ReferenceRole, type TaskDTO, type TaskStatus } from '@creature/shared';
+import {
+  EDIT_MODEL,
+  EDIT_TOOLS,
+  editLabel,
+  estimateCredits,
+  findModel,
+  normalizeParams,
+  PLANS,
+  TIER_LABEL,
+  type GenerationParams,
+  type Modality,
+  type Operation,
+  type PlanCode,
+  type ReferenceDTO,
+  type ReferenceRole,
+  type TaskDTO,
+  type TaskStatus,
+} from '@creature/shared';
 import { createHash } from 'node:crypto';
 import { z } from 'zod';
 import { AssetsService } from '../assets/assets.service';
+import { imageInfo } from '../assets/image-info';
 import { Errors } from '../common/errors';
 import { newId } from '../common/ids';
 import { parse } from '../common/http';
@@ -12,19 +30,29 @@ import { EventBus } from '../events/event-bus';
 import { ParamsSchema, RoutingSchema } from '../gateway/gateway.module';
 import { ModelGateway } from '../gateway/model-gateway.service';
 import { ModerationService } from '../safety/moderation.service';
+import { StorageService } from '../storage/storage.service';
+
+/** 涂抹区域（PNG data URL）的长度上限，约 730 KB 的图片 */
+const MAX_MASK_CHARS = 1_000_000;
+/** 超分后的最大边长 */
+const MAX_UPSCALED_SIDE = 8192;
 
 export const CreateSchema = z.object({
   modality: z.enum(['image', 'video', 'text', 'audio']),
   operation: z.enum(['generate', 'edit']).default('generate'),
-  prompt: z.string().trim().min(1, '请输入提示词').max(4000),
+  // 图像编辑中只有局部重绘必须填写描述，其余创作的必填校验在 create() 中完成
+  prompt: z.string().trim().max(4000).default(''),
   params: ParamsSchema.default({}),
   routing: RoutingSchema,
   source: z.enum(['studio', 'canvas', 'agent', 'template']).default('studio'),
   references: z
-    .array(z.object({ asset_id: z.string().max(64), role: z.enum(['style', 'subject', 'character', 'first_frame', 'last_frame']) }).strict())
+    .array(z.object({ asset_id: z.string().max(64), role: z.enum(['style', 'subject', 'character', 'first_frame', 'last_frame', 'source']) }).strict())
     .max(4, '最多引用 4 张参考图')
     .default([]),
+  /** 局部重绘 / 消除的涂抹区域：PNG data URL，白色为要修改的部分 */
+  mask: z.string().max(MAX_MASK_CHARS, '涂抹区域图片过大').optional(),
 });
+type CreateBody = z.infer<typeof CreateSchema>;
 
 /** 各模态允许的参考图用途 */
 const REF_ROLES: Record<Modality, ReferenceRole[]> = { image: ['style', 'subject', 'character'], video: ['first_frame', 'last_frame'], text: [], audio: [] };
@@ -42,6 +70,7 @@ export interface TaskRow {
   prompt: string;
   params: GenerationParams;
   input_refs: ReferenceDTO[];
+  mask_key: string | null;
   status: TaskStatus;
   queue: 'p0' | 'p1' | 'p2';
   progress: number;
@@ -61,6 +90,7 @@ const KIND_LABEL: Record<Modality, string> = { image: '图像生成', video: '�
 
 export function ledgerMemo(t: Pick<TaskRow, 'modality' | 'params'>, modelName: string): string {
   const p = t.params;
+  if (p.tool) return `图像编辑 · ${editLabel(p)}`;
   const spec =
     t.modality === 'image'
       ? `${String(p.resolution ?? '1k').toUpperCase()} ×${p.count ?? 1}`
@@ -81,6 +111,7 @@ export class GenerationsService {
     private readonly moderation: ModerationService,
     private readonly assets: AssetsService,
     private readonly bus: EventBus,
+    private readonly storage: StorageService,
   ) {}
 
   async create(userId: string, rawBody: unknown, idemKey: string | undefined): Promise<{ task: TaskDTO; replay: boolean }> {
@@ -94,18 +125,38 @@ export class GenerationsService {
       return { task: await this.toDTO(existing), replay: true };
     }
 
+    const imageEdit = body.modality === 'image' && body.operation === 'edit';
+    const edit = imageEdit ? await this.checkEdit(userId, body) : null;
+    if (!edit) {
+      if (!body.prompt) throw Errors.invalid('请输入提示词');
+      if (body.mask || body.params.tool || body.params.scale) throw Errors.invalid('tool、scale 与 mask 只用于图像编辑（modality = image，operation = edit）');
+    }
+    const prompt = edit ? edit.prompt : body.prompt;
+
     // 输入审核：不通过直接拒绝，不冻结积分
-    const verdict = this.moderation.checkText(body.prompt);
+    const verdict = this.moderation.checkText(prompt);
     if (verdict.verdict === 'block') {
       await this.moderation.record({ userId, targetType: 'prompt', targetId: null, result: verdict });
       throw Errors.contentRejected(verdict.labels[0] ?? 'policy');
     }
 
-    await this.checkReferences(userId, body.modality, body.references);
+    if (!edit) await this.checkReferences(userId, body.modality, body.references);
 
-    const pinned = body.routing.pinned_model ? this.gateway.resolvePinned(body.routing.pinned_model, body.modality) : null;
-    if (body.routing.pinned_model && !pinned) throw Errors.invalid('所选模型不可用或与创作类型不匹配');
-    const routed = pinned ? { model: pinned, reason: `已手动指定 ${pinned.name}` } : this.gateway.route(body.modality, body.prompt, body.routing.strategy);
+    // 图像编辑固定由编辑模型处理；其余按手动指定或智能路由
+    let routed: { model: NonNullable<ReturnType<typeof findModel>>; reason: string } | null;
+    let strategy: string = body.routing.strategy;
+    if (edit) {
+      if (body.routing.pinned_model && body.routing.pinned_model !== EDIT_MODEL) throw Errors.invalid('图像编辑只能使用图像编辑模型');
+      const m = findModel(EDIT_MODEL)!;
+      if (!this.gateway.configured(EDIT_MODEL)) throw Errors.modelUnavailable();
+      routed = { model: m, reason: `${editLabel(body.params)}由 ${m.name} 处理` };
+      strategy = 'pinned';
+    } else {
+      const pinned = body.routing.pinned_model ? this.gateway.resolvePinned(body.routing.pinned_model, body.modality) : null;
+      if (body.routing.pinned_model && !pinned) throw Errors.invalid('所选模型不可用或与创作类型不匹配');
+      if (pinned) strategy = 'pinned';
+      routed = pinned ? { model: pinned, reason: `已手动指定 ${pinned.name}` } : this.gateway.route(body.modality, prompt, body.routing.strategy);
+    }
     if (!routed) throw Errors.modelUnavailable();
     const model = routed.model;
     const params = normalizeParams(model, body.params as GenerationParams);
@@ -116,6 +167,11 @@ export class GenerationsService {
     const queue = PLANS[planActive ? user.plan_code : 'free']?.queue ?? 'p2';
     const accountId = await this.credits.accountIdFor(userId);
     const id = newId('tsk');
+    let maskKey: string | null = null;
+    if (edit?.mask) {
+      maskKey = StorageService.keyFor('private', userId, `${id}-mask`, 'image/png');
+      await this.storage.put(maskKey, edit.mask);
+    }
 
     try {
       await this.db.tx(async (q) => {
@@ -124,8 +180,8 @@ export class GenerationsService {
         await this.credits.freeze(q, accountId, estimate, id, `冻结 · ${ledgerMemo({ modality: body.modality, params }, model.name)}`);
         await q.query(
           `INSERT INTO generation_tasks (id, user_id, account_id, modality, operation, model_code, routing_strategy, routing_reason, prompt, params,
-             status, queue, estimated_credits, idempotency_key, request_hash, source, input_refs)
-           VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, 'queued', $11, $12, $13, $14, $15, $16)`,
+             status, queue, estimated_credits, idempotency_key, request_hash, source, input_refs, mask_key)
+           VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, 'queued', $11, $12, $13, $14, $15, $16, $17)`,
           [
             id,
             userId,
@@ -133,9 +189,9 @@ export class GenerationsService {
             body.modality,
             body.operation,
             model.code,
-            pinned ? 'pinned' : body.routing.strategy,
+            strategy,
             routed.reason,
-            body.prompt,
+            prompt,
             JSON.stringify(params),
             queue,
             estimate,
@@ -143,6 +199,7 @@ export class GenerationsService {
             requestHash,
             body.source,
             JSON.stringify(body.references),
+            maskKey,
           ],
         );
       });
@@ -160,6 +217,44 @@ export class GenerationsService {
     this.bus.emit(userId, { type: 'task.progress', task });
     await this.credits.notify(accountId);
     return { task, replay: false };
+  }
+
+  /**
+   * 图像编辑校验：一张本人的源图；局部重绘 / 消除需要 PNG 涂抹区域，局部重绘还要描述；
+   * 扩图需要与原图不同的比例；超分后的边长不超过 8192。返回任务提示词与解码后的遮罩。
+   */
+  private async checkEdit(userId: string, body: CreateBody): Promise<{ prompt: string; mask?: Buffer }> {
+    const tool = body.params.tool;
+    if (!tool) throw Errors.invalid('请选择编辑工具（params.tool）');
+    const spec = EDIT_TOOLS[tool];
+    const source = body.references.find((r) => r.role === 'source');
+    if (!source || body.references.length !== 1) throw Errors.invalid('图像编辑需要且只能指定一张源图（role = source）');
+    const [src] = await this.db.query<{ title: string; width: number | null; height: number | null }>(
+      `SELECT title, width, height FROM assets WHERE id = $1 AND user_id = $2 AND kind = 'image' AND deleted_at IS NULL`,
+      [source.asset_id, userId],
+    );
+    if (!src) throw Errors.invalid('源图不存在或不是图像');
+    if (spec.needsPrompt && !body.prompt) throw Errors.invalid('请描述要把涂抹区域改成什么');
+
+    let mask: Buffer | undefined;
+    if (spec.needsMask) {
+      const m = body.mask ? /^data:image\/png;base64,([A-Za-z0-9+/]+={0,2})$/.exec(body.mask) : null;
+      if (!body.mask) throw Errors.invalid('请先涂抹要修改的区域');
+      mask = m ? Buffer.from(m[1], 'base64') : undefined;
+      if (!mask || imageInfo(mask)?.mime !== 'image/png') throw Errors.invalid('涂抹区域必须是 PNG 图片');
+    } else if (body.mask) {
+      throw Errors.invalid(`${spec.label}不需要涂抹区域`);
+    }
+    if (tool === 'outpaint') {
+      const ratio = body.params.ratio;
+      if (!ratio) throw Errors.invalid('请选择扩图后的比例');
+      const [a, b] = ratio.split(':').map(Number);
+      if (src.width && src.height && Math.abs(a / b - src.width / src.height) / (src.width / src.height) < 0.03) throw Errors.invalid('扩图比例与原图相同，请选择其他比例');
+    }
+    if (tool === 'upscale' && Math.max(src.width ?? 0, src.height ?? 0) * (body.params.scale ?? 2) > MAX_UPSCALED_SIDE) {
+      throw Errors.invalid(`超分后边长会超过 ${MAX_UPSCALED_SIDE} 像素，请选择较小的倍数`);
+    }
+    return { prompt: body.prompt || `${editLabel(body.params)} · ${src.title}`, mask };
   }
 
   /** 参考图只能是本人未删除的图像，且用途要与创作类型匹配（首帧、尾帧各至多一张） */

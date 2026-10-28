@@ -24,6 +24,8 @@ export const ParamsSchema = z
     template: z.enum(['xhs', 'script', 'ad', 'article', 'storyboard']).optional(),
     tone: z.string().max(10).optional(),
     transform: z.enum(['改写', '扩写', '缩写', '换语气']).optional(),
+    tool: z.enum(['inpaint', 'outpaint', 'erase', 'cutout', 'upscale']).optional(),
+    scale: z.union([z.literal(2), z.literal(4)]).optional(),
   })
   .strict();
 export const RoutingSchema = z.object({ strategy: z.enum(['auto', 'cheap', 'best']).default('auto'), pinned_model: z.string().nullish() }).default({ strategy: 'auto' });

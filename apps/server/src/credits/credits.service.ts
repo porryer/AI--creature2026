@@ -98,6 +98,41 @@ export class CreditsService {
     return true;
   }
 
+  /**
+   * 人工调整（后台）：增加时发放一年有效的 admin 批次；扣减时按到期顺序从批次中扣除，可用余额不足则拒绝。
+   * 流水类型为 adjust，对账规则不变。
+   */
+  async adjust(q: Queryable, accountId: string, delta: number, memo: string, idemKey: string): Promise<number> {
+    if (!Number.isInteger(delta) || delta === 0) throw Errors.invalid('调整数量必须是非零整数');
+    await this.expireAccount(q, accountId);
+    const acc = await this.lock(q, accountId);
+    const dup = await q.query('SELECT 1 FROM credit_ledger WHERE account_id = $1 AND idempotency_key = $2', [accountId, idemKey]);
+    if (dup.length) return acc.available;
+    let grantId: string | undefined;
+    if (delta > 0) {
+      grantId = newId('grt');
+      await q.query(`INSERT INTO credit_grants (id, account_id, source, amount, remaining, expires_at) VALUES ($1, $2, 'admin', $3, $3, now() + interval '1 year')`, [grantId, accountId, delta]);
+    } else {
+      if (acc.available < -delta) throw Errors.invalid(`可用积分只有 ${acc.available}，不足以扣减 ${-delta}`);
+      const grants = await q.query<GrantRow>(
+        `SELECT id, remaining, amount, expires_at FROM credit_grants WHERE account_id = $1 AND remaining > 0 AND expires_at > now() ORDER BY expires_at, id FOR UPDATE`,
+        [accountId],
+      );
+      let left = -delta;
+      for (const g of grants) {
+        if (left === 0) break;
+        const take = Math.min(left, g.remaining);
+        await q.query('UPDATE credit_grants SET remaining = remaining - $2 WHERE id = $1', [g.id, take]);
+        left -= take;
+      }
+      if (left > 0) throw new Error(`积分批次与账户余额不一致（账户 ${accountId} 缺少 ${left}）`);
+    }
+    const available = acc.available + delta;
+    await this.setBalances(q, accountId, available, acc.frozen);
+    await this.write(q, accountId, 'adjust', delta, 0, available, { grantId, memo, idemKey });
+    return available;
+  }
+
   /** 冻结积分：不足时抛出 INSUFFICIENT_CREDITS */
   async freeze(q: Queryable, accountId: string, amount: number, taskId: string, memo: string): Promise<void> {
     if (amount <= 0) return;

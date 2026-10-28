@@ -1,5 +1,5 @@
 import { stripAiTextLabel } from '@creature/shared';
-import { Download, Film, Heart, Repeat2, Send } from 'lucide-react';
+import { Download, Film, Heart, Repeat2, Send, Wand2 } from 'lucide-react';
 import { useState } from 'react';
 import { api, BACKEND } from '../lib/api';
 import { navigate } from '../lib/router';
@@ -15,7 +15,7 @@ export function AssetViewer() {
 }
 
 function ViewerBody({ a }: { a: Asset }) {
-  const { openViewer, patchAsset, setHandoff, downloadAsset } = useStore();
+  const { openViewer, openEditor, patchAsset, setHandoff, downloadAsset } = useStore();
   const [publishing, setPublishing] = useState(false);
   const close = () => openViewer(null);
   const contentId = a.contentId ?? `CRT-${new Date(a.createdAt).toISOString().slice(0, 10).replace(/-/g, '')}-${a.id.slice(-5).toUpperCase()}`;
@@ -91,6 +91,11 @@ function ViewerBody({ a }: { a: Asset }) {
                 }}
               >
                 <Repeat2 size={15} /> 再次生成
+              </button>
+            )}
+            {a.kind === 'image' && (
+              <button className="btn" onClick={() => openEditor(a)}>
+                <Wand2 size={15} /> 编辑
               </button>
             )}
             {a.kind === 'image' && (

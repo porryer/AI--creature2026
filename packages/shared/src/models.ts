@@ -1,4 +1,4 @@
-import type { GenerationParams, Modality, ModelInfo, RoutingStrategy } from './types';
+import type { EditTool, GenerationParams, Modality, ModelInfo, RoutingStrategy } from './types';
 
 // 接入模型目录（名称与能力为规划数据，价格规则对应 docs/02-prd.md 4.10 节）
 export const MODELS: ModelInfo[] = [
@@ -7,6 +7,7 @@ export const MODELS: ModelInfo[] = [
   { code: 'seedream-4', name: 'Seedream 4.0', vendor: '火山方舟', provider: 'volcengine', modality: 'image', tier: 'advanced', quality: 5, speed: 4, price: 4, unit: '张', tags: ['中文文字', '写实', '产品'], desc: '中文排版与写实光影表现好' },
   { code: 'wanx-2.5', name: '通义万相 2.5', vendor: '阿里云百炼', provider: 'bailian', modality: 'image', tier: 'advanced', quality: 4, speed: 4, price: 4, unit: '张', tags: ['插画', '国风'], desc: '插画、国风与海报风格稳定' },
   { code: 'seedream-5', name: 'Seedream 5.0', vendor: '火山方舟', provider: 'volcengine', modality: 'image', tier: 'flagship', quality: 5, speed: 3, price: 6, unit: '张', tags: ['旗舰', '4K', '多参考'], desc: '最高细节，支持多张参考图融合' },
+  { code: 'creature-edit', name: '造物·图像编辑', vendor: '自部署编辑模型', provider: 'self_hosted', modality: 'image', tier: 'standard', quality: 4, speed: 4, price: 2, unit: '次', tags: ['重绘', '扩图', '抠图', '超分'], desc: '局部重绘、扩图、消除、抠图与超分', editOnly: true },
   // 视频
   { code: 'creature-motion', name: '造物·标准视频', vendor: '自部署 Wan', provider: 'self_hosted', modality: 'video', tier: 'standard', quality: 3, speed: 4, price: 8, unit: '秒', tags: ['低成本'], desc: '基础运动与运镜，适合素材与草稿', maxDuration: 10 },
   { code: 'wan-2.6', name: '万相 Wan 2.6', vendor: '阿里云百炼', provider: 'bailian', modality: 'video', tier: 'advanced', quality: 4, speed: 4, price: 8, unit: '秒', tags: ['性价比'], desc: '画面稳定、性价比高', maxDuration: 15 },
@@ -23,8 +24,22 @@ export const MODELS: ModelInfo[] = [
   { code: 'creature-music', name: '造物·配乐', vendor: '已备案音乐模型', provider: 'music', modality: 'audio', tier: 'advanced', quality: 4, speed: 3, price: 15, unit: '首', tags: ['配乐', '可选人声'], desc: '按风格与情绪生成 2 分钟内配乐' },
 ];
 
-/** 某模态下可供用户选择的模型（配乐模型单独入口，不参与路由） */
-export const modelsFor = (m: Modality) => MODELS.filter((x) => x.modality === m && x.code !== 'creature-music');
+/** 某模态下可供用户选择的模型（配乐与图像编辑模型单独入口，不参与路由） */
+export const modelsFor = (m: Modality) => MODELS.filter((x) => x.modality === m && x.code !== 'creature-music' && !x.editOnly);
+
+export const EDIT_MODEL = 'creature-edit';
+
+/** 图像编辑工具：名称、是否需要涂抹区域、是否必须填写描述（价目见 docs/02-prd.md 4.10 节） */
+export const EDIT_TOOLS: Record<EditTool, { label: string; desc: string; needsMask: boolean; needsPrompt: boolean }> = {
+  inpaint: { label: '局部重绘', desc: '涂抹要修改的区域，描述想要的内容', needsMask: true, needsPrompt: true },
+  outpaint: { label: '扩图', desc: '向四周扩展画面到新的比例', needsMask: false, needsPrompt: false },
+  erase: { label: '消除', desc: '涂抹要去掉的物体，自动补全背景', needsMask: true, needsPrompt: false },
+  cutout: { label: '抠图', desc: '识别主体，去掉背景', needsMask: false, needsPrompt: false },
+  upscale: { label: '超分', desc: '放大到 2 倍或 4 倍并增强细节', needsMask: false, needsPrompt: false },
+};
+
+/** 编辑任务的显示名称，如"超分 4×" */
+export const editLabel = (p: Pick<GenerationParams, 'tool' | 'scale'>) => (p.tool ? `${EDIT_TOOLS[p.tool].label}${p.tool === 'upscale' ? ` ${p.scale ?? 2}×` : ''}` : '图像编辑');
 export const findModel = (code: string) => MODELS.find((m) => m.code === code);
 export const modelByCode = (code: string) => findModel(code) ?? MODELS[0];
 
@@ -37,6 +52,8 @@ type ParamsLike = GenerationParams | Readonly<Record<string, unknown>>;
 /** 积分预估：与 PRD 价目表一致，前后端共用同一实现 */
 export function estimateCredits(model: ModelInfo, params: ParamsLike): number {
   const p = params as Record<string, unknown>;
+  // 图像编辑按次计费：超分 2× / 4× 为 2 / 4 积分，其余工具 2 积分
+  if (model.editOnly) return p.tool === 'upscale' && Number(p.scale) === 4 ? 4 : model.price;
   switch (model.modality) {
     case 'image': {
       const count = Number(p.count ?? 1);
@@ -112,6 +129,10 @@ export const MAX_IMAGES_PER_TASK = 12;
 /** 校验并规范化参数：时长不超过模型上限、原生音频仅限支持的模型 */
 export function normalizeParams(model: ModelInfo, params: GenerationParams): GenerationParams {
   const p: GenerationParams = { ...params };
+  if (model.editOnly) {
+    // 只保留当前工具需要的参数
+    return { tool: p.tool, count: 1, ...(p.tool === 'outpaint' ? { ratio: p.ratio } : {}), ...(p.tool === 'upscale' ? { scale: p.scale === 4 ? 4 : 2 } : {}) };
+  }
   if (model.modality === 'image') {
     p.count = Math.min(MAX_IMAGES_PER_TASK, Math.max(1, Math.round(p.count ?? 1)));
     p.resolution = p.resolution === '2k' || p.resolution === '4k' ? p.resolution : '1k';

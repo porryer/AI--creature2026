@@ -1,4 +1,4 @@
-import { estimateCredits, fallbackModels, findModel, modelByCode, modelsFor, normalizeParams, routeModel } from '../src/models';
+import { EDIT_MODEL, editLabel, estimateCredits, fallbackModels, findModel, modelByCode, modelsFor, normalizeParams, routeModel } from '../src/models';
 import { orderAmountFen, PLANS } from '../src/plans';
 
 const m = (code: string) => {
@@ -79,6 +79,27 @@ describe('fallbackModels 与 normalizeParams', () => {
   });
   it('modelByCode 对未知编码返回默认模型', () => {
     expect(modelByCode('nope').code).toBe('creature-swift');
+  });
+});
+
+describe('图像编辑', () => {
+  const edit = findModel(EDIT_MODEL)!;
+  it('编辑模型不参与生成路由，也不作为备选模型', () => {
+    expect(modelsFor('image').map((x) => x.code)).not.toContain(EDIT_MODEL);
+    expect(fallbackModels(modelByCode('seedream-4')).map((x) => x.code)).not.toContain(EDIT_MODEL);
+    for (const s of ['auto', 'cheap', 'best'] as const) expect(routeModel('image', '抠图换背景', s).model.code).not.toBe(EDIT_MODEL);
+  });
+  it('按次计费：超分 2× / 4× 为 2 / 4 积分，其余工具 2 积分', () => {
+    expect(estimateCredits(edit, { tool: 'inpaint' })).toBe(2);
+    expect(estimateCredits(edit, { tool: 'cutout', count: 4, resolution: '4k' })).toBe(2);
+    expect(estimateCredits(edit, { tool: 'upscale', scale: 2 })).toBe(2);
+    expect(estimateCredits(edit, { tool: 'upscale', scale: 4 })).toBe(4);
+  });
+  it('只保留当前工具需要的参数', () => {
+    expect(normalizeParams(edit, { tool: 'outpaint', ratio: '16:9', scale: 4, resolution: '4k', count: 3 })).toEqual({ tool: 'outpaint', ratio: '16:9', count: 1 });
+    expect(normalizeParams(edit, { tool: 'upscale', ratio: '1:1' })).toEqual({ tool: 'upscale', scale: 2, count: 1 });
+    expect(editLabel({ tool: 'upscale', scale: 4 })).toBe('超分 4×');
+    expect(editLabel({ tool: 'erase' })).toBe('消除');
   });
 });
 

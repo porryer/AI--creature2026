@@ -1,4 +1,4 @@
-import { artSvg, estimateCredits, mockTransform, mockWriting, sizeForRatio, type ModelInfo, type TransformKind } from '@creature/shared';
+import { artSvg, estimateCredits, mockTransform, mockWriting, sizeForRatio, type GenerationParams, type ModelInfo, type TransformKind } from '@creature/shared';
 import { createHash } from 'node:crypto';
 import type { RawOutput } from '../safety/labeling.service';
 import { encodeWav, synth } from '../safety/wav';
@@ -28,6 +28,7 @@ function imageTag(r: ReferenceInput, x: number, y: number, w: number, h: number,
  * - 提示词含“敏感画面”：输出审核拦截，返还积分。
  *
  * 参考图：图像的主体 / 角色参考会被放进新场景中央，风格参考作为底图；视频的首帧 / 尾帧直接驱动画面。
+ * 图像编辑：以源图为底，按涂抹区域重绘 / 模糊补全，扩图向四周延展，抠图保留中央主体，超分按倍数放大。
  */
 export class MockProvider implements ProviderAdapter {
   readonly name = 'mock';
@@ -56,6 +57,7 @@ export class MockProvider implements ProviderAdapter {
   private render(req: AdapterRequest): RawOutput[] {
     const p = req.params;
     const ref = (...roles: string[]) => req.references.find((r) => roles.includes(r.role) && r.data.length <= MAX_EMBED_BYTES);
+    if (req.model.editOnly) return [renderEdit(req.prompt, p, ref('source'), ref('mask'))];
     if (req.modality === 'image') {
       const { w, h } = sizeForRatio(p.ratio ?? '3:4', LONG_SIDE[p.resolution ?? '1k'] ?? 1024);
       const subject = ref('subject', 'character');
@@ -100,6 +102,59 @@ export class MockProvider implements ProviderAdapter {
     }
     const text = req.operation === 'edit' ? mockTransform((p.transform as TransformKind) ?? '改写', req.prompt) : mockWriting(p.template, req.prompt, p.tone);
     return [{ kind: 'text', mime: 'text/plain; charset=utf-8', data: Buffer.from(text), text }];
+  }
+}
+
+/** 图像编辑的模拟结果：确定性的 SVG，内嵌源图并按工具处理 */
+function renderEdit(prompt: string, p: GenerationParams, src: ReferenceInput | undefined, mask: ReferenceInput | undefined): RawOutput {
+  if (!src) throw new VendorError('VENDOR_ERROR', '缺少源图', false);
+  const sw = src.width ?? 1024;
+  const sh = src.height ?? 1024;
+  const out = (w: number, h: number, body: string): RawOutput => ({ kind: 'image', mime: 'image/svg+xml', data: Buffer.from(wrap(w, h, body)), width: w, height: h });
+  const maskDef = (w: number, h: number) =>
+    mask ? `<mask id="edit-mask" maskUnits="userSpaceOnUse" x="0" y="0" width="${w}" height="${h}">${imageTag(mask, 0, 0, w, h, 'slice').replace('xMidYMid slice', 'none')}</mask>` : '';
+
+  switch (p.tool) {
+    case 'upscale': {
+      const k = p.scale ?? 2;
+      return out(sw * k, sh * k, imageTag(src, 0, 0, sw * k, sh * k, 'meet'));
+    }
+    case 'outpaint': {
+      // 保持原图大小居中，向外延展到目标比例；延展区域是按提示词生成的画面叠加原图的模糊放大
+      const [a, b] = (p.ratio ?? '1:1').split(':').map(Number);
+      const r = a / b;
+      const w = r >= sw / sh ? Math.round(sh * r) : sw;
+      const h = r >= sw / sh ? sh : Math.round(sw / r);
+      const blur = Math.round(Math.max(w, h) / 30);
+      return out(
+        w,
+        h,
+        `<defs><filter id="edit-blur"><feGaussianBlur stdDeviation="${blur}"/></filter></defs>${artSvg(prompt, { w, h, variant: 1 })}` +
+          `<g filter="url(#edit-blur)" opacity="0.7">${imageTag(src, 0, 0, w, h, 'slice')}</g>${imageTag(src, (w - sw) / 2, (h - sh) / 2, sw, sh, 'meet')}`,
+      );
+    }
+    case 'inpaint':
+      // 涂抹区域内显示按描述生成的画面
+      return out(sw, sh, `<defs>${maskDef(sw, sh)}</defs>${imageTag(src, 0, 0, sw, sh, 'meet')}<g mask="url(#edit-mask)">${artSvg(prompt, { w: sw, h: sh, variant: 2 })}</g>`);
+    case 'erase': {
+      // 涂抹区域用周围画面的大半径模糊填充，模拟去掉物体后的背景补全
+      const blur = Math.round(Math.max(sw, sh) / 12);
+      return out(
+        sw,
+        sh,
+        `<defs>${maskDef(sw, sh)}<filter id="edit-fill" x="-20%" y="-20%" width="140%" height="140%"><feGaussianBlur stdDeviation="${blur}"/></filter></defs>` +
+          `${imageTag(src, 0, 0, sw, sh, 'meet')}<g mask="url(#edit-mask)"><g filter="url(#edit-fill)">${imageTag(src, 0, 0, sw, sh, 'meet')}</g></g>`,
+      );
+    }
+    default:
+      // 抠图：保留中央主体（羽化边缘），背景透明
+      return out(
+        sw,
+        sh,
+        `<defs><radialGradient id="edit-feather"><stop offset="0.8" stop-color="#fff"/><stop offset="1" stop-color="#000"/></radialGradient>` +
+          `<mask id="edit-mask"><ellipse cx="${sw / 2}" cy="${sh * 0.54}" rx="${sw * 0.34}" ry="${sh * 0.4}" fill="url(#edit-feather)"/></mask></defs>` +
+          `<g mask="url(#edit-mask)">${imageTag(src, 0, 0, sw, sh, 'meet')}</g>`,
+      );
   }
 }
 

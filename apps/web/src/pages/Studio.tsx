@@ -31,7 +31,7 @@ import { ModelPicker, resolveModel } from '../components/ModelPicker';
 import { Segmented, Status, Switch } from '../components/ui';
 import { waveFor } from '@creature/shared';
 import { BRAND_KIT, CHARACTERS, VOICES, WRITING_TEMPLATES, timeAgo } from '../lib/mock';
-import { AI_TEXT_LABEL, estimateCredits, modelByCode, modelsFor, stripAiTextLabel, type TransformKind } from '@creature/shared';
+import { AI_TEXT_LABEL, editLabel, estimateCredits, modelByCode, modelsFor, stripAiTextLabel, type GenerationParams, type TransformKind } from '@creature/shared';
 import { navigate } from '../lib/router';
 import { uid, useStore, type Handoff } from '../lib/store';
 import type { Asset, Modality, ModelInfo, Output, RoutingStrategy, Task } from '../lib/types';
@@ -159,10 +159,13 @@ function assetFromOutput(o: Output, t: Task): Asset {
 }
 
 function TaskCard({ task, onVariant }: { task: Task; onVariant?: (t: Task) => void }) {
-  const { state, openViewer, patchAsset, toast, setHandoff, submit, cancelTask, downloadAsset } = useStore();
+  const { state, openViewer, openEditor, patchAsset, toast, setHandoff, submit, cancelTask, downloadAsset } = useStore();
   const n = Math.min(task.count, 4);
-  const paramText =
-    task.modality === 'image'
+  const isEdit = task.modality === 'image' && !!task.params.tool;
+  const editSource = isEdit && task.sourceAssetId ? state.assets.find((a) => a.id === task.sourceAssetId) : undefined;
+  const paramText = isEdit
+    ? `${editLabel(task.params as GenerationParams)}${task.params.ratio ? ` · ${task.params.ratio}` : ''}`
+    : task.modality === 'image'
       ? `${task.params.ratio} · ${String(task.params.resolution).toUpperCase()} · ${task.count} 张`
       : task.modality === 'video'
         ? `${task.params.ratio} · ${task.params.duration} 秒 · ${task.params.resolution}${task.params.audio ? ' · 原生音频' : ''}`
@@ -208,7 +211,12 @@ function TaskCard({ task, onVariant }: { task: Task; onVariant?: (t: Task) => vo
             {task.error}
             {task.status === 'failed' && !task.error?.includes('返还') && `，已返还 ${task.credits} 积分`}
           </span>
-          {task.status === 'failed' && (
+          {task.status === 'failed' && isEdit && editSource && (
+            <button className="btn sm" onClick={() => openEditor(editSource)}>
+              <Wand2 size={14} /> 重新编辑
+            </button>
+          )}
+          {task.status === 'failed' && !isEdit && (
             <>
               <button className="btn sm" onClick={() => submit({ modality: task.modality, prompt: task.prompt.replace('失败', ''), model: task.model, params: task.params, count: task.count })}>
                 <RefreshCw size={14} /> 重试
@@ -247,7 +255,12 @@ function TaskCard({ task, onVariant }: { task: Task; onVariant?: (t: Task) => vo
                   <button aria-label="收藏" title="收藏" onClick={() => (patchAsset(asset.id, { favorite: !asset.favorite }), toast(asset.favorite ? '已取消收藏' : '已收藏到资产库'))}>
                     <Heart size={15} fill={asset.favorite ? 'currentColor' : 'none'} />
                   </button>
-                  {o.kind === 'image' && onVariant && (
+                  {o.kind === 'image' && (
+                    <button aria-label="编辑" title="编辑：局部重绘 / 扩图 / 消除 / 抠图 / 超分" onClick={() => openEditor(asset)}>
+                      <Wand2 size={15} />
+                    </button>
+                  )}
+                  {o.kind === 'image' && onVariant && !isEdit && (
                     <button aria-label="生成变体" title="生成变体" onClick={() => onVariant(task)}>
                       <Shuffle size={15} />
                     </button>

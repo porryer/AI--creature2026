@@ -2,10 +2,11 @@ import { REPORT_REASONS, type AdminModelDTO, type AdminOverviewDTO, type ReviewI
 import { Check, Info, RefreshCw, ShieldOff, X } from 'lucide-react';
 import { useCallback, useEffect, useState } from 'react';
 import { Art } from '../components/Art';
-import { Switch } from '../components/ui';
+import { Segmented, Switch } from '../components/ui';
 import { api, BACKEND } from '../lib/api';
 import { ADMIN, fmt, timeAgo } from '../lib/mock';
 import { errorText, simplifyRatio, useStore } from '../lib/store';
+import { AdminUsers } from './AdminUsers';
 
 export function Admin() {
   return BACKEND === 'api' ? <LiveAdmin /> : <DemoAdmin />;
@@ -27,6 +28,7 @@ function LiveAdmin() {
   const [models, setModels] = useState<AdminModelDTO[]>([]);
   const [queue, setQueue] = useState<ReviewItemDTO[] | null>(null);
   const [busy, setBusy] = useState<string | null>(null);
+  const [tab, setTab] = useState<'overview' | 'users'>('overview');
   const isAdmin = state.profile?.role === 'admin';
 
   const load = useCallback(async () => {
@@ -83,118 +85,137 @@ function LiveAdmin() {
     <div className="page" style={{ display: 'flex', flexDirection: 'column', gap: 20 }}>
       <div className="page-head" style={{ marginBottom: 0 }}>
         <div>
-          <h2>运营概览</h2>
-          <p>数据按北京时间统计；模型健康度来自网关 5 分钟窗口与近 24 小时任务。</p>
+          <h2>{tab === 'overview' ? '运营概览' : '用户管理'}</h2>
+          <p>{tab === 'overview' ? '数据按北京时间统计；模型健康度来自网关 5 分钟窗口与近 24 小时任务。' : '冻结或封禁会立即让该用户退出登录；积分调整与状态变更都会写入审计日志。'}</p>
         </div>
-        <button className="btn" onClick={() => void load()}>
-          <RefreshCw size={14} /> 刷新
-        </button>
+        <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+          <Segmented
+            label="后台页面"
+            value={tab}
+            onChange={setTab}
+            options={[
+              { value: 'overview', label: '概览与审核' },
+              { value: 'users', label: '用户' },
+            ]}
+          />
+          {tab === 'overview' && (
+            <button className="btn" onClick={() => void load()}>
+              <RefreshCw size={14} /> 刷新
+            </button>
+          )}
+        </div>
       </div>
-      <div className="kpis">
-        {kpis.map((k) => (
-          <div className="panel kpi" key={k.k}>
-            <span className="k">{k.k}</span>
-            <span className="v">{k.v}</span>
-            <span className="d subtle">{k.d}</span>
+      {tab === 'users' ? (
+        <AdminUsers />
+      ) : (
+        <>
+          <div className="kpis">
+            {kpis.map((k) => (
+              <div className="panel kpi" key={k.k}>
+                <span className="k">{k.k}</span>
+                <span className="v">{k.v}</span>
+                <span className="d subtle">{k.d}</span>
+              </div>
+            ))}
           </div>
-        ))}
-      </div>
 
-      <div className="admin-grid">
-        <section className="panel" aria-labelledby="models-title" style={{ minWidth: 0 }}>
-          <div className="section-title" style={{ padding: '16px 18px 0' }}>
-            <h3 id="models-title">模型健康度</h3>
-            <span className="subtle" style={{ fontSize: 12 }}>
-              5 分钟窗口成功率低于 85% 自动熔断
-            </span>
-          </div>
-          <div className="table-wrap">
-            <table className="data">
-              <thead>
-                <tr>
-                  <th>模型</th>
-                  <th>状态</th>
-                  <th className="num">24 小时任务</th>
-                  <th className="num">成功率</th>
-                  <th className="num">P95 耗时</th>
-                  <th className="num">5 分钟样本</th>
-                </tr>
-              </thead>
-              <tbody>
-                {models.map((m) => {
-                  const [h, label] = modelHealth(m);
-                  return (
-                    <tr key={m.code}>
-                      <td>{m.name}</td>
-                      <td>
-                        <span className={`health ${h}`}>
-                          <i />
-                          {label}
-                        </span>
-                      </td>
-                      <td className="num">{fmt(m.tasks_24h)}</td>
-                      <td className="num" style={{ color: h === 'warn' ? 'var(--gold)' : undefined }}>
-                        {pct(m.success_rate_24h)}
-                      </td>
-                      <td className="num">{m.p95_sec_24h === null ? '—' : m.p95_sec_24h >= 60 ? `${(m.p95_sec_24h / 60).toFixed(1)} 分` : `${m.p95_sec_24h} 秒`}</td>
-                      <td className="num">{m.window_samples}</td>
+          <div className="admin-grid">
+            <section className="panel" aria-labelledby="models-title" style={{ minWidth: 0 }}>
+              <div className="section-title" style={{ padding: '16px 18px 0' }}>
+                <h3 id="models-title">模型健康度</h3>
+                <span className="subtle" style={{ fontSize: 12 }}>
+                  5 分钟窗口成功率低于 85% 自动熔断
+                </span>
+              </div>
+              <div className="table-wrap">
+                <table className="data">
+                  <thead>
+                    <tr>
+                      <th>模型</th>
+                      <th>状态</th>
+                      <th className="num">24 小时任务</th>
+                      <th className="num">成功率</th>
+                      <th className="num">P95 耗时</th>
+                      <th className="num">5 分钟样本</th>
                     </tr>
-                  );
-                })}
-              </tbody>
-            </table>
-          </div>
-          {overview && (
-            <div style={{ padding: '14px 18px 18px' }}>
-              <div className="eyebrow" style={{ marginBottom: 8 }}>
-                近 14 天日生成量（次）
+                  </thead>
+                  <tbody>
+                    {models.map((m) => {
+                      const [h, label] = modelHealth(m);
+                      return (
+                        <tr key={m.code}>
+                          <td>{m.name}</td>
+                          <td>
+                            <span className={`health ${h}`}>
+                              <i />
+                              {label}
+                            </span>
+                          </td>
+                          <td className="num">{fmt(m.tasks_24h)}</td>
+                          <td className="num" style={{ color: h === 'warn' ? 'var(--gold)' : undefined }}>
+                            {pct(m.success_rate_24h)}
+                          </td>
+                          <td className="num">{m.p95_sec_24h === null ? '—' : m.p95_sec_24h >= 60 ? `${(m.p95_sec_24h / 60).toFixed(1)} 分` : `${m.p95_sec_24h} 秒`}</td>
+                          <td className="num">{m.window_samples}</td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
               </div>
-              <TrendChart data={overview.trend.map((d) => d.tasks)} unit="次" />
-            </div>
-          )}
-        </section>
-
-        <section className="panel" aria-labelledby="mod-title" style={{ minWidth: 0 }}>
-          <div className="section-title" style={{ padding: '16px 18px 4px' }}>
-            <h3 id="mod-title">内容复核 · 灵感广场</h3>
-            <span className="tag text">{queue?.length ?? 0} 条待处理</span>
-          </div>
-          {queue === null ? (
-            <p className="subtle" style={{ padding: 18 }}>
-              加载中…
-            </p>
-          ) : queue.length === 0 ? (
-            <div className="empty" style={{ margin: 16 }}>
-              <Check size={24} />
-              <b>复核队列已清空</b>
-              <span>发布时机审存疑或被举报的作品会出现在这里</span>
-            </div>
-          ) : (
-            queue.map((item) => (
-              <div key={item.post.id} className="mod-item">
-                <Art prompt={item.post.prompt ?? item.post.title} ratio={item.post.width && item.post.height ? simplifyRatio(item.post.width, item.post.height) : '1:1'} kind={item.post.kind} url={item.post.url} badge={false} long={120} />
-                <div className="grow">
-                  <p>
-                    <b>{item.post.title}</b> · {item.post.prompt}
-                  </p>
-                  <span className="subtle" style={{ fontSize: 12 }}>
-                    {item.reason === 'reviewing'
-                      ? `机审存疑 · ${item.machine_labels.map((l) => l.replace(/^review:/, '')).join('、') || '待复核'}`
-                      : `被举报 · ${item.reports.map((r) => `${REPORT_REASONS[r.reason]} ×${r.count}`).join('、')}${item.post.status === 'hidden' ? ' · 已自动隐藏' : ''}`}{' '}
-                    · {item.post.author.nickname} · {timeAgo(Date.parse(item.post.created_at))}
-                  </span>
+              {overview && (
+                <div style={{ padding: '14px 18px 18px' }}>
+                  <div className="eyebrow" style={{ marginBottom: 8 }}>
+                    近 14 天日生成量（次）
+                  </div>
+                  <TrendChart data={overview.trend.map((d) => d.tasks)} unit="次" />
                 </div>
-                <button className="btn sm" aria-label={`通过 ${item.post.title}`} title="通过" disabled={busy === item.post.id} onClick={() => void decide(item, 'approve')}>
-                  <Check size={14} />
-                </button>
-                <button className="btn sm danger" aria-label={`下架 ${item.post.title}`} title="下架" disabled={busy === item.post.id} onClick={() => void decide(item, 'remove')}>
-                  <X size={14} />
-                </button>
+              )}
+            </section>
+
+            <section className="panel" aria-labelledby="mod-title" style={{ minWidth: 0 }}>
+              <div className="section-title" style={{ padding: '16px 18px 4px' }}>
+                <h3 id="mod-title">内容复核 · 灵感广场</h3>
+                <span className="tag text">{queue?.length ?? 0} 条待处理</span>
               </div>
-            ))
-          )}
-        </section>
-      </div>
+              {queue === null ? (
+                <p className="subtle" style={{ padding: 18 }}>
+                  加载中…
+                </p>
+              ) : queue.length === 0 ? (
+                <div className="empty" style={{ margin: 16 }}>
+                  <Check size={24} />
+                  <b>复核队列已清空</b>
+                  <span>发布时机审存疑或被举报的作品会出现在这里</span>
+                </div>
+              ) : (
+                queue.map((item) => (
+                  <div key={item.post.id} className="mod-item">
+                    <Art prompt={item.post.prompt ?? item.post.title} ratio={item.post.width && item.post.height ? simplifyRatio(item.post.width, item.post.height) : '1:1'} kind={item.post.kind} url={item.post.url} badge={false} long={120} />
+                    <div className="grow">
+                      <p>
+                        <b>{item.post.title}</b> · {item.post.prompt}
+                      </p>
+                      <span className="subtle" style={{ fontSize: 12 }}>
+                        {item.reason === 'reviewing'
+                          ? `机审存疑 · ${item.machine_labels.map((l) => l.replace(/^review:/, '')).join('、') || '待复核'}`
+                          : `被举报 · ${item.reports.map((r) => `${REPORT_REASONS[r.reason]} ×${r.count}`).join('、')}${item.post.status === 'hidden' ? ' · 已自动隐藏' : ''}`}{' '}
+                        · {item.post.author.nickname} · {timeAgo(Date.parse(item.post.created_at))}
+                      </span>
+                    </div>
+                    <button className="btn sm" aria-label={`通过 ${item.post.title}`} title="通过" disabled={busy === item.post.id} onClick={() => void decide(item, 'approve')}>
+                      <Check size={14} />
+                    </button>
+                    <button className="btn sm danger" aria-label={`下架 ${item.post.title}`} title="下架" disabled={busy === item.post.id} onClick={() => void decide(item, 'remove')}>
+                      <X size={14} />
+                    </button>
+                  </div>
+                ))
+              )}
+            </section>
+          </div>
+        </>
+      )}
     </div>
   );
 }

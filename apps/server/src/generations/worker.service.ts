@@ -142,7 +142,7 @@ export class GenerationWorker implements OnApplicationBootstrap, OnApplicationSh
   /** 读取参考图：生成的作品用内部原始文件（不带角标），上传的素材即原图 */
   private async loadReferences(task: TaskRow): Promise<ReferenceInput[]> {
     const refs = task.input_refs ?? [];
-    if (!refs.length) return [];
+    if (!refs.length && !task.mask_key) return [];
     const rows = await this.db.query<{ id: string; mime_type: string; storage_key: string; raw_storage_key: string | null; width: number | null; height: number | null }>(
       'SELECT id, mime_type, storage_key, raw_storage_key, width, height FROM assets WHERE id = ANY($1::text[]) AND user_id = $2',
       [refs.map((r) => r.asset_id), task.user_id],
@@ -154,6 +154,7 @@ export class GenerationWorker implements OnApplicationBootstrap, OnApplicationSh
       if (!a) continue;
       out.push({ role: r.role, mime: a.mime_type, data: await this.storage.read(a.raw_storage_key ?? a.storage_key), width: a.width ?? undefined, height: a.height ?? undefined });
     }
+    if (task.mask_key) out.push({ role: 'mask', mime: 'image/png', data: await this.storage.read(task.mask_key) });
     return out;
   }
 

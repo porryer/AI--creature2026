@@ -17,7 +17,8 @@ export interface AdapterRequest {
 }
 
 export interface ReferenceInput {
-  role: ReferenceRole;
+  /** mask：局部重绘 / 消除的涂抹区域（白色为要修改的部分） */
+  role: ReferenceRole | 'mask';
   mime: string;
   data: Buffer;
   width?: number;

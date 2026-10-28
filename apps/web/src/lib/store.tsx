@@ -1,5 +1,6 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useReducer, useRef, type ReactNode } from 'react';
 import {
+  editLabel,
   estimateCredits,
   mockTransform,
   mockWriting,
@@ -16,7 +17,7 @@ import {
   type TaskDTO,
   type TransformKind,
 } from '@creature/shared';
-import { api, ApiError, BACKEND, refresh, subscribeEvents } from './api';
+import { api, ApiError, BACKEND, onAccountSuspended, refresh, subscribeEvents } from './api';
 import { INITIAL_ASSETS, INITIAL_LEDGER, NOW } from './mock';
 import type { Asset, Folder, LedgerEntry, Modality, ModelInfo, Notice, Output, Task, Toast } from './types';
 
@@ -68,6 +69,8 @@ interface State {
   handoff: Handoff | null;
   theme: Theme;
   viewer: Asset | null;
+  /** 正在图像编辑器中编辑的作品 */
+  editing: Asset | null;
 }
 
 type Action =
@@ -92,7 +95,8 @@ type Action =
   | { type: 'read_notices' }
   | { type: 'handoff'; handoff: Handoff | null }
   | { type: 'theme'; theme: Theme }
-  | { type: 'viewer'; asset: Asset | null };
+  | { type: 'viewer'; asset: Asset | null }
+  | { type: 'editing'; asset: Asset | null };
 
 let seq = 0;
 export const uid = (p: string) => `${p}${Date.now().toString(36)}${(seq++).toString(36)}`;
@@ -120,6 +124,7 @@ export function taskFromDTO(d: TaskDTO): Task {
     error: d.error?.message,
     routingReason: d.routing_reason,
     source: d.source,
+    sourceAssetId: d.references?.find((r) => r.role === 'source')?.asset_id,
     count,
     queueMs: 0,
     runMs: 0,
@@ -263,7 +268,7 @@ function reducer(s: State, a: Action): State {
     case 'auth':
       return { ...s, auth: a.auth };
     case 'reset':
-      return { ...s, auth: 'anon', profile: null, available: 0, frozen: 0, expiringSoon: 0, tasks: [], assets: [], assetsCursor: null, folders: [], ledger: [], notices: [], viewer: null };
+      return { ...s, auth: 'anon', profile: null, available: 0, frozen: 0, expiringSoon: 0, tasks: [], assets: [], assetsCursor: null, folders: [], ledger: [], notices: [], viewer: null, editing: null };
     case 'add_assets': {
       const ids = new Set(s.assets.map((x) => x.id));
       return { ...s, assets: [...a.assets.filter((x) => !ids.has(x.id)), ...s.assets] };
@@ -290,6 +295,8 @@ function reducer(s: State, a: Action): State {
       return { ...s, theme: a.theme };
     case 'viewer':
       return { ...s, viewer: a.asset };
+    case 'editing':
+      return { ...s, editing: a.asset, viewer: a.asset ? null : s.viewer };
   }
 }
 
@@ -352,6 +359,7 @@ const mockInitial = (): State => ({
   handoff: null,
   theme: loadTheme(),
   viewer: null,
+  editing: null,
 });
 
 const apiInitial = (): State => ({
@@ -370,6 +378,7 @@ const apiInitial = (): State => ({
   handoff: null,
   theme: loadTheme(),
   viewer: null,
+  editing: null,
 });
 
 // ---------- Provider ----------
@@ -384,6 +393,10 @@ export interface SubmitSpec {
   operation?: 'generate' | 'edit';
   /** 参考图（仅接入后端时生效）：资产 ID 与用途 */
   references?: { assetId: string; role: ReferenceRole }[];
+  /** 图像编辑的涂抹区域（PNG data URL） */
+  mask?: string;
+  /** 图像编辑的源图：离线演示用它渲染结果 */
+  editSource?: Asset;
 }
 
 export interface PurchaseItem {
@@ -421,6 +434,8 @@ interface Ctx {
   setHandoff: (h: Handoff | null) => void;
   setTheme: (t: Theme) => void;
   openViewer: (a: Asset | null) => void;
+  /** 打开图像编辑器（会关闭作品详情） */
+  openEditor: (a: Asset | null) => void;
   readNotices: () => void;
 }
 
@@ -430,6 +445,7 @@ export function StoreProvider({ children }: { children: ReactNode }) {
   const [state, dispatch] = useReducer(reducer, undefined, BACKEND === 'api' ? apiInitial : mockInitial);
   const ref = useRef(state);
   ref.current = state;
+  const editSources = useRef(new Map<string, Asset>());
 
   const toast = useCallback((text: string, kind: Toast['kind'] = 'ok') => {
     const id = uid('t');
@@ -496,6 +512,16 @@ export function StoreProvider({ children }: { children: ReactNode }) {
     return subscribeEvents(onServerEvent);
   }, [state.auth, onServerEvent]);
 
+  // 账号被后台限制：退回登录页
+  useEffect(() => {
+    if (BACKEND !== 'api') return;
+    return onAccountSuspended(() => {
+      if (ref.current.auth !== 'authed') return;
+      dispatch({ type: 'reset' });
+      toast('账号已被限制使用，如有疑问请联系客服', 'err');
+    });
+  }, [toast]);
+
   // ---------- 提交任务 ----------
 
   const submit = useCallback(
@@ -513,6 +539,7 @@ export function StoreProvider({ children }: { children: ReactNode }) {
               routing: { strategy: 'auto', pinned_model: spec.model.code },
               source: spec.source ?? 'studio',
               references: spec.references?.map((r) => ({ asset_id: r.assetId, role: r.role })),
+              mask: spec.mask,
             },
             uid('idem-'),
           );
@@ -546,6 +573,7 @@ export function StoreProvider({ children }: { children: ReactNode }) {
         createdAt: Date.now(),
         outputs: [],
         source: spec.source ?? 'studio',
+        sourceAssetId: spec.references?.find((r) => r.role === 'source')?.assetId,
         count,
         queueMs: 900 + Math.random() * 900,
         runMs: (3200 + Math.random() * 2400) * slow * (spec.model.speed >= 4 ? 0.8 : 1.15),
@@ -555,7 +583,17 @@ export function StoreProvider({ children }: { children: ReactNode }) {
       const spec2 = spec.modality === 'image' ? `${String(spec.params.resolution ?? '1k').toUpperCase()} ×${count}` : spec.modality === 'video' ? `${spec.params.duration} 秒 ${spec.params.resolution}` : TIER_LABEL[spec.model.tier];
       const ledger: LedgerEntry | undefined = blocked
         ? undefined
-        : { id: `lg_${id}`, time: Date.now(), type: 'freeze', label: `冻结 · ${{ image: '图像生成', video: '视频生成', text: '写作', audio: '音频生成' }[spec.modality]} · ${spec.model.name} · ${spec2}`, delta: -credits, balance: ref.current.available - credits };
+        : {
+            id: `lg_${id}`,
+            time: Date.now(),
+            type: 'freeze',
+            label: spec.params.tool
+              ? `冻结 · 图像编辑 · ${editLabel(spec.params as GenerationParams)}`
+              : `冻结 · ${{ image: '图像生成', video: '视频生成', text: '写作', audio: '音频生成' }[spec.modality]} · ${spec.model.name} · ${spec2}`,
+            delta: -credits,
+            balance: ref.current.available - credits,
+          };
+      if (spec.editSource) editSources.current.set(id, spec.editSource);
       dispatch({ type: 'add_task', task, ledger });
       if (blocked) toast('内容可能违反社区规范，未生成，积分未扣除', 'err');
       return id;
@@ -586,12 +624,15 @@ export function StoreProvider({ children }: { children: ReactNode }) {
         if (p >= 1) {
           const text =
             t.modality === 'text' ? (t.operation === 'edit' ? mockTransform((t.params.transform as TransformKind) ?? '改写', t.prompt) : mockWriting(t.params.template as string | undefined, t.prompt, t.params.tone as string | undefined)) : undefined;
+          // 离线演示的图像编辑：沿用源图画面（扩图时换成目标比例）
+          const src = t.operation === 'edit' && t.modality === 'image' ? editSources.current.get(t.id) : undefined;
           const outputs = Array.from({ length: t.count }, (_, i) => ({
             id: `${t.id}_${i}`,
             kind: t.modality,
-            prompt: t.prompt,
-            ratio: String(t.params.ratio ?? (t.modality === 'audio' ? '1:1' : '3:4')),
-            variant: i,
+            prompt: src ? src.prompt : t.prompt,
+            url: src?.url,
+            ratio: String(t.params.ratio ?? src?.ratio ?? (t.modality === 'audio' ? '1:1' : '3:4')),
+            variant: src ? src.variant : i,
             durationSec: t.modality === 'video' ? Number(t.params.duration) : t.modality === 'audio' ? Number(t.params.seconds ?? 12) : undefined,
             text,
           }));
@@ -812,6 +853,7 @@ export function StoreProvider({ children }: { children: ReactNode }) {
       setHandoff: (h) => dispatch({ type: 'handoff', handoff: h }),
       setTheme: (t) => dispatch({ type: 'theme', theme: t }),
       openViewer: (a) => dispatch({ type: 'viewer', asset: a }),
+      openEditor: (a) => dispatch({ type: 'editing', asset: a }),
       readNotices: () => dispatch({ type: 'read_notices' }),
     }),
     [state, submit, toast, hydrate],

@@ -1,4 +1,5 @@
 import { AssetViewer } from './components/AssetViewer';
+import { ImageEditor } from './components/ImageEditor';
 import { NavRail, TabBar, TopBar } from './components/Shell';
 import { Toasts } from './components/ui';
 import { useRoute } from './lib/router';
@@ -49,6 +50,7 @@ function Workspace() {
       </div>
       <TabBar route={route} />
       <AssetViewer />
+      <ImageEditor />
       <Toasts />
     </div>
   );
