@@ -40,14 +40,15 @@
 | 403 | `ACCOUNT_SUSPENDED` | 账号已被后台冻结或封禁，客户端应退出登录 |
 | 403 | `PHONE_BINDING_REQUIRED` | 未绑定手机号，不能使用生成功能 |
 | 402 | `INSUFFICIENT_CREDITS` | 积分不足 |
-| 403 | `PLAN_FEATURE_REQUIRED` | 当前套餐不支持该功能（如 4K），`details.required_plan` |
+| 403 | `PLAN_FEATURE_REQUIRED` | 当前套餐不支持该功能（已实现：角色库与品牌套件），`details.required_plan` |
 | 404 | `NOT_FOUND` | 资源不存在 |
 | 409 | `IDEMPOTENCY_CONFLICT` | 相同幂等键但请求体不同 |
+| 409 | `LIBRARY_LIMIT` | 角色或品牌套件数量已达套餐上限 |
 | 422 | `CONTENT_REJECTED` | 提示词或素材未通过审核，`details.reason_code` |
 | 429 | `RATE_LIMITED` | 请求过于频繁（验证码、上传、发布、举报的每日上限；生成任务每分钟提交次数与进行中任务数），附 `Retry-After` |
 | 503 | `MODEL_UNAVAILABLE` | 所选模型及备选模型均不可用 |
 
-### 1.3 实现状态（Sprint 1–5）
+### 1.3 实现状态（Sprint 1–8）
 
 已实现（`apps/server`，带集成测试）：
 
@@ -63,6 +64,7 @@
 | 上传 | `POST /assets/uploads`、`PUT /uploads/{id}?exp=&sig=`（签名地址，无需登录态）、`POST /assets/uploads/{id}/complete`，见 3.7 |
 | 项目与画布 | `GET /projects`、`POST /projects`（同时创建画布）、`PATCH /projects/{id}`、`DELETE /projects/{id}`、`GET /canvases/latest`、`GET /canvases/{id}`、`PUT /canvases/{id}`，见 3.8 |
 | 社区 | `GET /feed?tab=recommend\|latest\|hot\|mine&kind=&cursor=`、`POST /posts`、`GET /posts/{id}`、`DELETE /posts/{id}`（作者撤回）、`PUT` / `DELETE /posts/{id}/like`、`POST /posts/{id}/remix`、`POST /reports`，见 3.9 |
+| 角色与品牌 | `GET` / `POST /characters`、`GET` / `PATCH` / `DELETE /characters/{id}`、`GET` / `POST /brand-kits`、`GET` / `PATCH` / `DELETE /brand-kits/{id}`，生成时通过 `context` 引用，见 3.11 |
 | 管理后台 | `GET /admin/overview`、`GET /admin/models`、`GET /admin/review-queue`、`POST /admin/posts/{id}/decision`、`GET /admin/users`、`GET /admin/users/{id}`、`POST /admin/users/{id}/status`、`POST /admin/users/{id}/credits`、`GET /admin/reconcile`、`POST /admin/reconcile/run`（需 `role = admin`），见 3.10 |
 | 积分 | `GET /credits/balance`、`GET /credits/ledger` |
 | 订单 | `POST /orders`、`GET /orders/{id}`、`POST /orders/{id}/mock-pay`（仅 `PAYMENTS_MODE=mock`） |
@@ -253,7 +255,9 @@ Content-Type: application/json
 | image | `style`（取色调与质感）、`subject`（保留商品 / 主体外观）、`character`（保持人物一致） |
 | video | `first_frame`、`last_frame`（各至多 1 张） |
 
-参考图不改变计价；校验失败返回 `400`，不会冻结积分。品牌套件与角色卡引用（`context`）随角色库、品牌套件一起实现。
+参考图不改变计价；校验失败返回 `400`，不会冻结积分。
+
+引用角色与品牌套件 `context`：`{ "character_ids": ["chr_…"], "brand_kit_id": "bk_…", "place_logo": true }`，见 3.11。
 
 **图像编辑**：`modality: "image"`、`operation: "edit"`，`references` 只能有一张 `role: "source"` 的源图（本人的图像资产，上传素材也可以），固定由编辑模型 `creature-edit` 处理（指定其他模型返回 `400`，不切换备选模型），按次计费：
 
@@ -463,9 +467,54 @@ data: {"session_status":"awaiting_confirm"}
 - `GET /v1/admin/review-queue`：审核中、被举报隐藏或有未处理举报的作品，附机审标签与举报原因统计；审核员可看到未公开的提示词。
 - `POST /v1/admin/posts/{id}/decision` `{ "action": "approve" | "remove", "note": "…" }`：通过时发布并驳回举报（举报计数清零），下架时隐藏并将举报标记为成立；每次处理写一条人工审核记录与审计日志。
 - `GET /v1/admin/users?q=&status=&cursor=`：`q` 可以是完整手机号（按 HMAC 索引精确匹配）、手机号后 4 位、昵称片段或用户 ID。`GET /v1/admin/users/{id}` 返回积分、任务与发布统计、最近 20 条积分流水、最近 10 个任务和针对该用户的操作记录。
-- `POST /v1/admin/users/{id}/status` `{ "status": "active" | "frozen" | "banned", "reason": "…" }`：冻结 / 封禁时吊销该用户全部刷新令牌，访问令牌在本实例内立即失效、其他实例最迟 10 秒后失效（返回 `403 ACCOUNT_SUSPENDED`），也无法再登录；不能修改自己或其他管理员。
+- `POST /v1/admin/users/{id}/status` `{ "status": "active" | "frozen" | "banned", "reason": "…" }`：冻结 / 封禁时吊销该用户全部刷新令牌，访问令牌在所有实例上立即失效（返回 `403 ACCOUNT_SUSPENDED`；跨实例通知丢失时最迟 10 秒），也无法再登录；不能修改自己或其他管理员。
 - `POST /v1/admin/users/{id}/credits` `{ "delta": 50, "reason": "生成异常补偿", "request_id": "…" }`：增加时发放一年有效的积分批次，扣减时按到期顺序扣除，可用余额不足返回 `400`；单次不超过 100000，同一 `request_id` 只生效一次；流水类型为 `adjust`，用户在自己的积分明细中可见。
 - `GET /v1/admin/reconcile`：最近 10 次全量对账（账户数、不一致账户数、已结束任务的残留冻结数与明细）；`POST /v1/admin/reconcile/run` 立即执行一次（只读核对，写审计日志）。
+
+### 3.11 角色库与品牌套件
+
+专业版、团队版功能（配额：专业版 20 个角色 / 5 个品牌套件，团队版 50 / 20）。其他套餐或套餐过期时，列表照常返回（`quota.limit` 为 0，已有内容可以查看与删除），新建、修改与生成时引用返回 `403 PLAN_FEATURE_REQUIRED`（`details.required_plan: "pro"`）；超出配额 `409 LIBRARY_LIMIT`。名称、描述、调性、字体、禁用元素等文字过审，不通过 `422 CONTENT_REJECTED`。
+
+**角色** `POST /v1/characters`
+
+```json
+{
+  "name": "林夏",
+  "description": "25 岁生活方式博主，短发、圆框眼镜、米色风衣",
+  "likeness": "none",
+  "consent_asset_id": null,
+  "refs": [{ "asset_id": "ast_…", "view": "front" }, { "asset_id": "ast_…", "view": "side" }, { "asset_id": "ast_…" }]
+}
+```
+
+- `refs`：3–8 张本人未删除的图像资产（上传或生成的均可，不能重复），`view` 可选 `front / side / back / full_body / expression`。
+- `likeness`：`none` 虚构角色 / 品牌 IP、`self` 本人肖像、`authorized` 他人肖像；`authorized` 必须附 `consent_asset_id`（本人上传的授权书图片）。
+- 返回 `CharacterDTO`：`refs` 带签名地址（已删除的资产不再列出）、`used_count` 被生成引用的次数。`PATCH` 只改传入的字段，传 `refs` 时整体替换。`GET /v1/characters` 返回 `{ data, quota: { used, limit } }`。
+
+**品牌套件** `POST /v1/brand-kits`
+
+```json
+{
+  "name": "山野咖啡",
+  "tone": "温暖、自然、有手作感",
+  "colors": [{ "name": "焦糖", "hex": "#B5652B" }, { "name": "松针", "hex": "#2F5D46" }],
+  "fonts": ["思源宋体 · 标题"],
+  "banned": ["冷色调", "塑料质感"],
+  "logos": [{ "asset_id": "ast_…", "variant": "primary" }]
+}
+```
+
+标准色最多 8 个（`#RRGGBB`，保存为大写）、字体 4 个、禁用元素 12 个、Logo 3 个版本（`primary / light / dark / mono` 各一个）。
+
+**生成时引用**：`POST /v1/generations` 的 `context`。
+
+| 字段 | 说明 |
+|---|---|
+| `character_ids` | 最多 2 个角色，仅图像与视频。每个角色按 正面 → 全身 → 侧面 → 表情 → 背面 的顺序取 3 张参考图（`role: "character"`，同一角色的参考图在适配器中分为一组）随请求传给模型 |
+| `brand_kit_id` | 图像、视频与写作。品牌调性与禁用元素注入提示词；图像与视频另注入标准色（并作为调色板传给适配器），图像注入字体 |
+| `place_logo` | 仅图像，品牌套件需有 Logo：主 Logo 作为参考图（`role: "logo"`）传给模型，提示词要求放在画面右上角（右下角留给"AI 生成"显式标识） |
+
+校验在冻结积分之前完成，非法引用返回 `400`；编辑任务不能带 `context`。任务创建时保存角色与品牌套件的快照，之后修改或删除不影响已提交的任务；任务的 `prompt` 仍是用户原始提示词，注入后的完整提示词与原始提示词一起过审。任务返回 `context: { characters: [{ id, name }], brand_kit: { id, name } | null, place_logo }`。角色 LoRA 训练（`POST /characters/{id}/train`）尚未实现。
 
 ## 4. 开放 API（P2）
 

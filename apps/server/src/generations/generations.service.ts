@@ -1,5 +1,7 @@
 import { Inject, Injectable } from '@nestjs/common';
 import {
+  composePrompt,
+  contextSummary,
   EDIT_MODEL,
   EDIT_TOOLS,
   editLabel,
@@ -9,6 +11,7 @@ import {
   PLANS,
   QUEUE_POSITION_CAP,
   TIER_LABEL,
+  type ContextSnapshot,
   type GenerationParams,
   type Modality,
   type Operation,
@@ -30,6 +33,7 @@ import { Db, DB, isUniqueViolation } from '../db/db';
 import { EventBus } from '../events/event-bus';
 import { ParamsSchema, RoutingSchema } from '../gateway/gateway.module';
 import { ModelGateway } from '../gateway/model-gateway.service';
+import { LibraryService } from '../library/library.service';
 import { ModerationService } from '../safety/moderation.service';
 import { StorageService } from '../storage/storage.service';
 import { AppConfig, CONFIG } from '../config';
@@ -53,6 +57,15 @@ export const CreateSchema = z.object({
     .default([]),
   /** 局部重绘 / 消除的涂抹区域：PNG data URL，白色为要修改的部分 */
   mask: z.string().max(MAX_MASK_CHARS, '涂抹区域图片过大').optional(),
+  /** 引用角色库与品牌套件（docs/02-prd.md 4.7） */
+  context: z
+    .object({
+      character_ids: z.array(z.string().min(1).max(64)).max(4).optional(),
+      brand_kit_id: z.string().min(1).max(64).nullable().optional(),
+      place_logo: z.boolean().optional(),
+    })
+    .strict()
+    .optional(),
 });
 type CreateBody = z.infer<typeof CreateSchema>;
 
@@ -73,6 +86,7 @@ export interface TaskRow {
   params: GenerationParams;
   input_refs: ReferenceDTO[];
   mask_key: string | null;
+  context: ContextSnapshot | null;
   status: TaskStatus;
   queue: 'p0' | 'p1' | 'p2';
   progress: number;
@@ -115,6 +129,7 @@ export class GenerationsService {
     private readonly assets: AssetsService,
     private readonly bus: EventBus,
     private readonly storage: StorageService,
+    private readonly library: LibraryService,
   ) {
     // 其他实例广播任务事件时，本实例据此读取任务推送给自己的连接
     bus.setTaskLoader(async (userId, taskId) => {
@@ -143,9 +158,12 @@ export class GenerationsService {
       if (body.mask || body.params.tool || body.params.scale) throw Errors.invalid('tool、scale 与 mask 只用于图像编辑（modality = image，operation = edit）');
     }
     const prompt = edit ? edit.prompt : body.prompt;
+    if (edit && (body.context?.character_ids?.length || body.context?.brand_kit_id || body.context?.place_logo)) throw Errors.invalid('图像编辑不支持引用角色或品牌套件');
+    // 角色与品牌套件：校验并生成快照（失败不冻结积分）
+    const context = edit ? null : await this.library.snapshot(userId, body.modality, body.context);
 
-    // 输入审核：不通过直接拒绝，不冻结积分
-    const verdict = this.moderation.checkText(prompt);
+    // 输入审核（含注入的角色设定与品牌规范）：不通过直接拒绝，不冻结积分
+    const verdict = this.moderation.checkText(composePrompt(prompt, body.modality, context));
     if (verdict.verdict === 'block') {
       await this.moderation.record({ userId, targetType: 'prompt', targetId: null, result: verdict });
       throw Errors.contentRejected(verdict.labels[0] ?? 'policy');
@@ -191,8 +209,8 @@ export class GenerationsService {
         await this.credits.freeze(q, accountId, estimate, id, `冻结 · ${ledgerMemo({ modality: body.modality, params }, model.name)}`);
         await q.query(
           `INSERT INTO generation_tasks (id, user_id, account_id, modality, operation, model_code, routing_strategy, routing_reason, prompt, params,
-             status, queue, estimated_credits, idempotency_key, request_hash, source, input_refs, mask_key)
-           VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, 'queued', $11, $12, $13, $14, $15, $16, $17)`,
+             status, queue, estimated_credits, idempotency_key, request_hash, source, input_refs, mask_key, context)
+           VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, 'queued', $11, $12, $13, $14, $15, $16, $17, $18)`,
           [
             id,
             userId,
@@ -211,8 +229,10 @@ export class GenerationsService {
             body.source,
             JSON.stringify(body.references),
             maskKey,
+            context ? JSON.stringify(context) : null,
           ],
         );
+        if (context) await this.library.markUsed(q, context);
       });
     } catch (e) {
       if (isUniqueViolation(e)) {
@@ -371,6 +391,7 @@ export class GenerationsService {
       queue: { name: r.queue, position },
       outputs: outs,
       references: r.input_refs ?? [],
+      context: contextSummary(r.context),
       error: r.error_code ? { code: r.error_code, message: r.error_message ?? '' } : null,
       source: r.source as TaskDTO['source'],
       created_at: new Date(r.created_at).toISOString(),

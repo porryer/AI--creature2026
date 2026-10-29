@@ -1,6 +1,9 @@
 import { AudioLines, Check, Download, FileText, Folder, FolderInput, FolderPlus, Heart, Image as ImageIcon, LayoutGrid, Palette, Pencil, Plus, Trash2, Upload, UserRound, Video, X } from 'lucide-react';
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { Art } from '../components/Art';
+import { BrandKits, CharacterLibrary } from '../components/Library';
+import { BACKEND } from '../lib/api';
+import { useLibrary } from '../lib/library';
 import { BRAND_KIT, CHARACTERS, timeAgo } from '../lib/mock';
 import { navigate } from '../lib/router';
 import { useStore } from '../lib/store';
@@ -10,6 +13,9 @@ type Cat = 'all' | 'image' | 'video' | 'audio' | 'text' | 'favorite' | 'characte
 export function Assets() {
   const { state, mode, openViewer, removeAssets, toast, setHandoff, uploadImage, fetchAssets, createFolder, renameFolder, deleteFolder, moveAssets, downloadAsset } = useStore();
   const [cat, setCat] = useState<Cat>('all');
+  const lib = useLibrary();
+  // 接入后端时显示真实数量；离线演示显示示例数据
+  const libCount = BACKEND === 'api' ? { characters: lib.characters.length, brand: lib.brandKits.length } : { characters: CHARACTERS.length, brand: 1 };
   const [picked, setPicked] = useState<string[]>([]);
   const [confirm, setConfirm] = useState<'assets' | 'folder' | null>(null);
   const [q, setQ] = useState('');
@@ -124,10 +130,10 @@ export function Assets() {
           ))}
           <div className="group eyebrow">一致性资产</div>
           <button aria-pressed={cat === 'characters'} onClick={() => pickCat('characters')}>
-            <UserRound size={16} /> 角色库 <span className="count">{CHARACTERS.length}</span>
+            <UserRound size={16} /> 角色库 <span className="count">{libCount.characters}</span>
           </button>
           <button aria-pressed={cat === 'brand'} onClick={() => pickCat('brand')}>
-            <Palette size={16} /> 品牌套件 <span className="count">1</span>
+            <Palette size={16} /> 品牌套件 <span className="count">{libCount.brand}</span>
           </button>
           <div className="group eyebrow">文件夹</div>
           {state.folders.map((f) => (
@@ -147,9 +153,9 @@ export function Assets() {
 
         <div style={{ minWidth: 0 }}>
           {cat === 'characters' ? (
-            <Characters />
+            BACKEND === 'api' ? <CharacterLibrary /> : <Characters />
           ) : cat === 'brand' ? (
-            <Brand />
+            BACKEND === 'api' ? <BrandKits /> : <Brand />
           ) : (
             <>
               <div className="page-head" style={{ marginBottom: 14 }}>

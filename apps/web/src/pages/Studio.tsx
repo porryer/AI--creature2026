@@ -27,17 +27,24 @@ import {
 } from 'lucide-react';
 import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import { Art } from '../components/Art';
+import { ContextPicker } from '../components/Library';
 import { ModelPicker, resolveModel } from '../components/ModelPicker';
 import { Segmented, Status, Switch } from '../components/ui';
 import { waveFor } from '@creature/shared';
 import { BRAND_KIT, CHARACTERS, VOICES, WRITING_TEMPLATES, timeAgo } from '../lib/mock';
 import { AI_TEXT_LABEL, editLabel, estimateCredits, modelByCode, modelsFor, QUEUE_POSITION_CAP, stripAiTextLabel, type GenerationParams, type TransformKind } from '@creature/shared';
+import { BACKEND } from '../lib/api';
+import { contextInput, NO_CONTEXT, type ContextChoice } from '../lib/library';
 import { navigate } from '../lib/router';
 import { uid, useStore, type Handoff } from '../lib/store';
 import type { Asset, Modality, ModelInfo, Output, RoutingStrategy, Task } from '../lib/types';
 
 /** 排队位置：1 表示下一个处理；超过计数上限时显示为"1000+" */
 const queueLabel = (pos: number) => (pos <= 1 ? '排队中 · 即将开始' : `排队中 · 前方 ${pos > QUEUE_POSITION_CAP ? `${QUEUE_POSITION_CAP}+` : pos - 1} 个任务`);
+
+/** 重新提交（重试、再来一组）时沿用任务引用的角色与品牌套件 */
+const contextOf = (t: Task) =>
+  t.context ? { character_ids: t.context.characters.map((c) => c.id), brand_kit_id: t.context.brand_kit?.id ?? null, place_logo: t.context.place_logo || undefined } : undefined;
 
 const MODE_TABS: { value: Modality; label: string; icon: typeof ImageIcon }[] = [
   { value: 'image', label: '图像', icon: ImageIcon },
@@ -185,6 +192,17 @@ function TaskCard({ task, onVariant }: { task: Task; onVariant?: (t: Task) => vo
             <span>{paramText}</span>
             <span className="mono">{task.credits} 积分</span>
             <span>{timeAgo(task.createdAt)}</span>
+            {task.context?.characters.map((c) => (
+              <span key={c.id} className="tag">
+                角色 · {c.name}
+              </span>
+            ))}
+            {task.context?.brand_kit && (
+              <span className="tag">
+                品牌 · {task.context.brand_kit.name}
+                {task.context.place_logo ? ' · Logo' : ''}
+              </span>
+            )}
           </div>
         </div>
         <span style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
@@ -221,14 +239,14 @@ function TaskCard({ task, onVariant }: { task: Task; onVariant?: (t: Task) => vo
           )}
           {task.status === 'failed' && !isEdit && (
             <>
-              <button className="btn sm" onClick={() => submit({ modality: task.modality, prompt: task.prompt.replace('失败', ''), model: task.model, params: task.params, count: task.count })}>
+              <button className="btn sm" onClick={() => submit({ modality: task.modality, prompt: task.prompt.replace('失败', ''), model: task.model, params: task.params, count: task.count, context: contextOf(task) })}>
                 <RefreshCw size={14} /> 重试
               </button>
               <button
                 className="btn sm"
                 onClick={() => {
                   const alt = modelsFor(task.modality).find((m) => m.code !== task.model.code && m.tier === task.model.tier) ?? modelsFor(task.modality)[0];
-                  submit({ modality: task.modality, prompt: task.prompt.replace('失败', ''), model: alt, params: task.params, count: task.count });
+                  submit({ modality: task.modality, prompt: task.prompt.replace('失败', ''), model: alt, params: task.params, count: task.count, context: contextOf(task) });
                 }}
               >
                 <Shuffle size={14} /> 换模型重试
@@ -409,16 +427,18 @@ function ImageStudio() {
   const [seed, setSeed] = useState('');
   const [brand, setBrand] = useState(false);
   const [character, setCharacter] = useState('');
+  const [ctx, setCtx] = useState<ContextChoice>(NO_CONTEXT);
   const { model } = resolveModel('image', prompt, strategy, pinned);
   const params = { ratio, resolution, count };
   const credits = estimateCredits(model, params);
 
   const go = (p = prompt) => {
     if (!p.trim()) return;
-    const extra = [brand ? `（品牌套件：${BRAND_KIT.name}）` : '', character ? `（角色：${CHARACTERS.find((c) => c.id === character)?.name}）` : ''].join('');
+    // 接入后端时品牌套件与角色随请求提交；离线演示只在提示词后注明
+    const extra = BACKEND === 'api' ? '' : [brand ? `（品牌套件：${BRAND_KIT.name}）` : '', character ? `（角色：${CHARACTERS.find((c) => c.id === character)?.name}）` : ''].join('');
     // 按本次提交的提示词解析模型：首页带入并自动开始时，渲染中的 model 可能还是旧提示词的结果
     const references = refs.flatMap((r) => (r.asset ? [{ assetId: r.asset.id, role: r.role }] : []));
-    submit({ modality: 'image', prompt: p.trim() + extra, model: resolveModel('image', p, strategy, pinned).model, params, count, references });
+    submit({ modality: 'image', prompt: p.trim() + extra, model: resolveModel('image', p, strategy, pinned).model, params, count, references, context: contextInput(ctx) });
   };
   const uploading = refs.some((r) => !r.asset);
 
@@ -430,6 +450,7 @@ function ImageStudio() {
     if (typeof hp.resolution === 'string' && ['1k', '2k', '4k'].includes(hp.resolution)) setResolution(hp.resolution);
     if (typeof hp.count === 'number') setCount(Math.min(4, Math.max(1, hp.count)));
     if (h.modelCode && modelsFor('image').some((m) => m.code === h.modelCode)) setPinned(h.modelCode);
+    if (h.characterIds) setCtx((c) => ({ ...c, characterIds: h.characterIds! }));
     if (auto && p) window.setTimeout(() => go(p), 50);
   });
 
@@ -525,23 +546,29 @@ function ImageStudio() {
             <span className="field-label">数量</span>
             <Segmented label="数量" value={count} onChange={setCount} options={[1, 2, 3, 4].map((v) => ({ value: v, label: `${v} 张` }))} />
           </div>
-          <div className="inline-row">
-            <label htmlFor="brand-switch" style={{ fontSize: 13 }}>
-              应用品牌套件 <span className="subtle">· {BRAND_KIT.name}</span>
-            </label>
-            <Switch id="brand-switch" checked={brand} onChange={setBrand} label="应用品牌套件" />
-          </div>
-          <div className="field">
-            <label htmlFor="img-character">引用角色</label>
-            <select id="img-character" className="select" value={character} onChange={(e) => setCharacter(e.target.value)}>
-              <option value="">不使用角色</option>
-              {CHARACTERS.map((c) => (
-                <option key={c.id} value={c.id}>
-                  {c.name} · {c.desc.slice(0, 12)}
-                </option>
-              ))}
-            </select>
-          </div>
+          {BACKEND === 'api' ? (
+            <ContextPicker modality="image" value={ctx} onChange={setCtx} />
+          ) : (
+            <>
+              <div className="inline-row">
+                <label htmlFor="brand-switch" style={{ fontSize: 13 }}>
+                  应用品牌套件 <span className="subtle">· {BRAND_KIT.name}</span>
+                </label>
+                <Switch id="brand-switch" checked={brand} onChange={setBrand} label="应用品牌套件" />
+              </div>
+              <div className="field">
+                <label htmlFor="img-character">引用角色</label>
+                <select id="img-character" className="select" value={character} onChange={(e) => setCharacter(e.target.value)}>
+                  <option value="">不使用角色</option>
+                  {CHARACTERS.map((c) => (
+                    <option key={c.id} value={c.id}>
+                      {c.name} · {c.desc.slice(0, 12)}
+                    </option>
+                  ))}
+                </select>
+              </div>
+            </>
+          )}
           <details className="details">
             <summary>
               <ChevronRight size={14} /> 高级选项
@@ -563,7 +590,7 @@ function ImageStudio() {
       main={
         <TaskFeed
           modality="image"
-          onVariant={(t) => submit({ modality: 'image', prompt: t.prompt, model: t.model, params: t.params, count: t.count })}
+          onVariant={(t) => submit({ modality: 'image', prompt: t.prompt, model: t.model, params: t.params, count: t.count, context: contextOf(t) })}
           empty={
             <div className="empty">
               <ImageIcon size={28} />
@@ -593,6 +620,7 @@ function VideoStudio() {
   const [camera, setCamera] = useState('推进');
   const [strength, setStrength] = useState(50);
   const [audio, setAudio] = useState(false);
+  const [ctx, setCtx] = useState<ContextChoice>(NO_CONTEXT);
   const [frame, setFrame] = useState<Asset | null>(null);
   const [last, setLast] = useState<Asset | null>(null);
   const [slot, setSlot] = useState<'first' | 'last'>('first');
@@ -621,7 +649,7 @@ function VideoStudio() {
     const m = resolveModel('video', p, strategy, pinned).model;
     const references =
       way === 't2v' || !frame ? [] : [{ assetId: frame.id, role: 'first_frame' as const }, ...(way === 'fl' && last ? [{ assetId: last.id, role: 'last_frame' as const }] : [])];
-    submit({ modality: 'video', prompt: `${p.trim()}${camera !== '固定' ? `（运镜：${camera}）` : ''}`, model: m, params: paramsFor(m), count: 1, references });
+    submit({ modality: 'video', prompt: `${p.trim()}${camera !== '固定' ? `（运镜：${camera}）` : ''}`, model: m, params: paramsFor(m), count: 1, references, context: contextInput(ctx) });
   };
 
   useHandoff('video', (raw, auto, ff, h) => {
@@ -741,6 +769,7 @@ function VideoStudio() {
             </label>
             <Switch id="vid-audio" checked={audio && !!model.nativeAudio} onChange={(v) => model.nativeAudio && setAudio(v)} label="原生音频" />
           </div>
+          {BACKEND === 'api' && <ContextPicker modality="video" value={ctx} onChange={setCtx} />}
         </>
       }
       submit={<SubmitButton credits={credits} disabled={!prompt.trim() || uploading || (way !== 't2v' && !frame)} onClick={() => go()} />}
@@ -780,6 +809,7 @@ function WriteStudio() {
   const [topic, setTopic] = useState('');
   const [tone, setTone] = useState('亲切');
   const [length, setLength] = useState('中');
+  const [ctx, setCtx] = useState<ContextChoice>(NO_CONTEXT);
   const [strategy, setStrategy] = useState<RoutingStrategy>('auto');
   const [pinned, setPinned] = useState<string | null>(null);
   const [text, setText] = useState('');
@@ -835,7 +865,7 @@ function WriteStudio() {
     setRevealing(false);
     setText('');
     setBoard(null);
-    const id = await submit({ modality: 'text', prompt: topic.trim() || '秋季咖啡新品', model, params: { template: tpl, tone, chars: target } });
+    const id = await submit({ modality: 'text', prompt: topic.trim() || '秋季咖啡新品', model, params: { template: tpl, tone, chars: target }, context: contextInput(ctx) });
     if (id) setPending({ id, kind: 'draft' });
   };
 
@@ -893,6 +923,7 @@ function WriteStudio() {
             <Segmented label="篇幅" value={length} onChange={setLength} options={['短', '中', '长'].map((v) => ({ value: v, label: v }))} />
           </div>
           <ModelPicker modality="text" prompt={routingHint} strategy={strategy} onStrategy={setStrategy} pinned={pinned} onPinned={setPinned} />
+          {BACKEND === 'api' && <ContextPicker modality="text" value={ctx} onChange={setCtx} />}
         </>
       }
       submit={<SubmitButton credits={credits} disabled={busy} onClick={() => void run()} label={pending?.kind === 'draft' ? '生成中…' : '开始写作'} />}

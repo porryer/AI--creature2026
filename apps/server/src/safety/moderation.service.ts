@@ -58,7 +58,7 @@ export class ModerationService {
 
   /** 记录审核结果；人工复核时带上 reviewerId */
   async record(
-    r: { userId: string; targetType: 'prompt' | 'upload' | 'output' | 'post'; targetId: string | null; result: Verdict; reviewerId?: string },
+    r: { userId: string; targetType: 'prompt' | 'upload' | 'output' | 'post' | 'character' | 'brand_kit'; targetId: string | null; result: Verdict; reviewerId?: string },
     q: Queryable = this.db,
   ) {
     await q.query('INSERT INTO moderation_records (id, user_id, target_type, target_id, verdict, labels, provider, stage, reviewer_id) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)', [

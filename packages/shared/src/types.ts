@@ -1,5 +1,7 @@
 // 前后端共享的领域类型与 API 数据结构（与 docs/05-api.md 对应）
 
+import type { TaskContextDTO } from './library';
+
 export type Modality = 'image' | 'video' | 'text' | 'audio';
 export type Tier = 'standard' | 'advanced' | 'flagship';
 export type RoutingStrategy = 'auto' | 'cheap' | 'best';
@@ -78,6 +80,8 @@ export interface TaskDTO {
   routing_reason: string;
   estimated_credits: number;
   actual_credits: number | null;
+  /** 生成时引用的角色与品牌套件（无引用时为 null） */
+  context: TaskContextDTO | null;
   /** position：同一模态排队中的第几位（1 表示下一个处理）；前方超过 QUEUE_POSITION_CAP 个时为 QUEUE_POSITION_CAP + 1 */
   queue: { name: string; position: number | null };
   outputs: OutputDTO[];

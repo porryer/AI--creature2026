@@ -1,4 +1,7 @@
 import type {
+  BrandKitDTO,
+  CharacterDTO,
+  GenerationContextInput,
   AdminModelDTO,
   AdminOverviewDTO,
   AdminUserDetailDTO,
@@ -134,7 +137,20 @@ export interface CreateGenerationBody {
   references?: ReferenceDTO[];
   /** 图像编辑的涂抹区域（PNG data URL） */
   mask?: string;
+  /** 引用角色与品牌套件 */
+  context?: GenerationContextInput;
 }
+
+/** 角色与品牌套件的增改请求 */
+export interface CharacterBody {
+  name: string;
+  description: string;
+  likeness: CharacterDTO['likeness'];
+  consent_asset_id?: string | null;
+  refs: { asset_id: string; view?: CharacterDTO['refs'][number]['view'] }[];
+}
+export type BrandKitBody = Pick<BrandKitDTO, 'name' | 'tone' | 'colors' | 'fonts' | 'banned'> & { logos: { asset_id: string; variant: BrandKitDTO['logos'][number]['variant'] }[] };
+type Quota = { used: number; limit: number };
 
 export const api = {
   sendCode: (phone: string) => raw<{ expires_in: number; dev_code?: string }>('POST', '/auth/sms/send', { phone }),
@@ -183,6 +199,15 @@ export const api = {
   setLike: (id: string, on: boolean) => call<{ liked: boolean; like_count: number }>(on ? 'PUT' : 'DELETE', `/posts/${id}/like`),
   remix: (id: string) => call<RemixDTO>('POST', `/posts/${id}/remix`, {}),
   report: (postId: string, reason: ReportReason, detail?: string) => call<{ id: string }>('POST', '/reports', { target_type: 'post', target_id: postId, reason, detail }),
+
+  characters: () => call<{ data: CharacterDTO[]; quota: Quota }>('GET', '/characters'),
+  createCharacter: (body: CharacterBody) => call<CharacterDTO>('POST', '/characters', body),
+  updateCharacter: (id: string, body: Partial<CharacterBody>) => call<CharacterDTO>('PATCH', `/characters/${id}`, body),
+  deleteCharacter: (id: string) => call<void>('DELETE', `/characters/${id}`),
+  brandKits: () => call<{ data: BrandKitDTO[]; quota: Quota }>('GET', '/brand-kits'),
+  createBrandKit: (body: BrandKitBody) => call<BrandKitDTO>('POST', '/brand-kits', body),
+  updateBrandKit: (id: string, body: Partial<BrandKitBody>) => call<BrandKitDTO>('PATCH', `/brand-kits/${id}`, body),
+  deleteBrandKit: (id: string) => call<void>('DELETE', `/brand-kits/${id}`),
 
   adminOverview: () => call<AdminOverviewDTO>('GET', '/admin/overview'),
   adminModels: () => call<{ data: AdminModelDTO[] }>('GET', '/admin/models'),

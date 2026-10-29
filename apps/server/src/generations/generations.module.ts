@@ -8,6 +8,7 @@ import { pageParams, parse, UserId } from '../common/http';
 import { CreditsModule } from '../credits/credits.module';
 import { EventBus } from '../events/event-bus';
 import { GatewayModule } from '../gateway/gateway.module';
+import { LibraryModule } from '../library/library.module';
 import { SafetyModule } from '../safety/safety.module';
 import { GenerationsService } from './generations.service';
 import { GenerationWorker } from './worker.service';
@@ -61,7 +62,7 @@ export class EventsController {
 }
 
 @Module({
-  imports: [CreditsModule, GatewayModule, AssetsModule, SafetyModule],
+  imports: [CreditsModule, GatewayModule, AssetsModule, SafetyModule, LibraryModule],
   controllers: [GenerationsController, EventsController],
   providers: [GenerationsService, GenerationWorker],
   exports: [GenerationWorker],

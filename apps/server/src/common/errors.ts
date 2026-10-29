@@ -15,6 +15,7 @@ export const Errors = {
   invalid: (message: string, details?: Record<string, unknown>) => new AppError('INVALID_ARGUMENT', 400, message, details),
   unauthenticated: (message = '请先登录') => new AppError('UNAUTHENTICATED', 401, message),
   forbidden: (message = '无权访问该资源') => new AppError('PERMISSION_DENIED', 403, message),
+  planRequired: (message: string, requiredPlan: string) => new AppError('PLAN_FEATURE_REQUIRED', 403, message, { required_plan: requiredPlan }),
   suspended: () => new AppError('ACCOUNT_SUSPENDED', 403, '账号已被限制使用，请联系客服'),
   notFound: (what = '资源') => new AppError('NOT_FOUND', 404, `${what}不存在`),
   insufficientCredits: (required: number, available: number) =>

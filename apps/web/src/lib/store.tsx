@@ -8,6 +8,7 @@ import {
   TIER_LABEL,
   type AssetDTO,
   type FolderDTO,
+  type GenerationContextInput,
   type GenerationParams,
   type LedgerEntryDTO,
   type MeDTO,
@@ -41,6 +42,8 @@ export interface Handoff {
   /** 做同款：沿用原作的参数与模型 */
   params?: GenerationParams;
   modelCode?: string | null;
+  /** 从角色库进入：预先选中的角色 */
+  characterIds?: string[];
 }
 
 export interface Profile {
@@ -127,6 +130,7 @@ export function taskFromDTO(d: TaskDTO): Task {
     routingReason: d.routing_reason,
     source: d.source,
     sourceAssetId: d.references?.find((r) => r.role === 'source')?.asset_id,
+    context: d.context ?? undefined,
     count,
     queueMs: 0,
     runMs: 0,
@@ -397,6 +401,8 @@ export interface SubmitSpec {
   references?: { assetId: string; role: ReferenceRole }[];
   /** 图像编辑的涂抹区域（PNG data URL） */
   mask?: string;
+  /** 引用角色与品牌套件（仅接入后端时生效） */
+  context?: GenerationContextInput;
   /** 图像编辑的源图：离线演示用它渲染结果 */
   editSource?: Asset;
 }
@@ -554,6 +560,7 @@ export function StoreProvider({ children }: { children: ReactNode }) {
               source: spec.source ?? 'studio',
               references: spec.references?.map((r) => ({ asset_id: r.assetId, role: r.role })),
               mask: spec.mask,
+              context: spec.context,
             },
             uid('idem-'),
           );

@@ -1,5 +1,5 @@
 import { Inject, Injectable, Logger, OnApplicationBootstrap, OnApplicationShutdown } from '@nestjs/common';
-import { estimateCredits, findModel, type Modality, type TaskStatus } from '@creature/shared';
+import { composePrompt, estimateCredits, findModel, type Modality, type TaskStatus } from '@creature/shared';
 import { AppConfig, CONFIG } from '../config';
 import { newId } from '../common/ids';
 import { CreditsService } from '../credits/credits.service';
@@ -169,7 +169,10 @@ export class GenerationWorker implements OnApplicationBootstrap, OnApplicationSh
         chain = chain.then(() => this.setProgress(task, pct)).catch(() => undefined);
       };
       const references = await this.loadReferences(task);
-      const result = await this.gateway.generate(primary, { taskId: task.id, modality: task.modality, operation: task.operation, prompt: task.prompt, params: task.params, references }, onProgress);
+      // 发给模型的提示词附加角色设定与品牌规范；品牌标准色同时作为调色板传给适配器
+      const prompt = composePrompt(task.prompt, task.modality, task.context);
+      const palette = task.context?.brand_kit?.colors.map((c) => c.hex);
+      const result = await this.gateway.generate(primary, { taskId: task.id, modality: task.modality, operation: task.operation, prompt, params: task.params, references, palette }, onProgress);
       await chain;
 
       // 只有当前这次尝试仍持有任务时才继续（任务可能已被超时回收并重新排队）
@@ -224,8 +227,14 @@ export class GenerationWorker implements OnApplicationBootstrap, OnApplicationSh
   }
 
   /** 读取参考图：生成的作品用内部原始文件（不带角标），上传的素材即原图 */
+  /** 参考图：用户指定的参考图、引用角色的参考图（按角色分组）、品牌 Logo、涂抹区域 */
   private async loadReferences(task: TaskRow): Promise<ReferenceInput[]> {
-    const refs = task.input_refs ?? [];
+    const ctx = task.context;
+    const refs: { asset_id: string; role: ReferenceInput['role']; group?: string }[] = [
+      ...(task.input_refs ?? []),
+      ...(ctx?.characters ?? []).flatMap((c) => c.ref_asset_ids.map((asset_id) => ({ asset_id, role: 'character' as const, group: c.id }))),
+      ...(ctx?.place_logo && ctx.brand_kit?.logo_asset_id ? [{ asset_id: ctx.brand_kit.logo_asset_id, role: 'logo' as const }] : []),
+    ];
     if (!refs.length && !task.mask_key) return [];
     const rows = await this.db.query<{ id: string; mime_type: string; storage_key: string; raw_storage_key: string | null; width: number | null; height: number | null }>(
       'SELECT id, mime_type, storage_key, raw_storage_key, width, height FROM assets WHERE id = ANY($1::text[]) AND user_id = $2',
@@ -236,7 +245,7 @@ export class GenerationWorker implements OnApplicationBootstrap, OnApplicationSh
     for (const r of refs) {
       const a = byId.get(r.asset_id);
       if (!a) continue;
-      out.push({ role: r.role, mime: a.mime_type, data: await this.storage.read(a.raw_storage_key ?? a.storage_key), width: a.width ?? undefined, height: a.height ?? undefined });
+      out.push({ role: r.role, group: r.group, mime: a.mime_type, data: await this.storage.read(a.raw_storage_key ?? a.storage_key), width: a.width ?? undefined, height: a.height ?? undefined });
     }
     if (task.mask_key) out.push({ role: 'mask', mime: 'image/png', data: await this.storage.read(task.mask_key) });
     return out;

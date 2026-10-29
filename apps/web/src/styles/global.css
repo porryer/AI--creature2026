@@ -2409,6 +2409,10 @@ table.board tr:last-child td {
 .char-refs .art:first-child {
   grid-row: span 2;
 }
+/* 不足 5 张参考图：一大两小 */
+.char-refs.three {
+  grid-template-columns: 2fr 1fr;
+}
 .char-refs .art {
   border-radius: 8px;
 }
@@ -2450,6 +2454,133 @@ table.board tr:last-child td {
   height: 44px;
   border-radius: 10px;
   border: 1px solid var(--line);
+}
+
+/* 角色库与品牌套件（接入后端） */
+.upgrade-card {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  padding: 16px 18px;
+  margin-bottom: 14px;
+  color: var(--fg-2);
+}
+.upgrade-card > svg {
+  color: var(--gold);
+  flex: none;
+}
+.upgrade-card h4 {
+  color: var(--fg);
+  font-size: 15px;
+}
+.upgrade-card p {
+  font-size: 12.5px;
+  margin-top: 2px;
+}
+.brand-list {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(min(420px, 100%), 1fr));
+  gap: 14px;
+}
+.row-actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.row-actions .btn {
+  flex: 1;
+}
+.hint.warn {
+  color: var(--danger);
+  font-size: 12px;
+  margin-top: 4px;
+}
+.form-stack {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+fieldset.field {
+  border: 0;
+  padding: 0;
+  margin: 0;
+  min-width: 0;
+}
+.radio-row,
+.check-row,
+.field > label.radio-row,
+.field > label.check-row {
+  display: flex;
+  align-items: center;
+  justify-content: flex-start;
+  gap: 8px;
+  font-weight: 400;
+  font-size: 13px;
+  color: var(--fg-2);
+  cursor: pointer;
+}
+.color-row {
+  display: grid;
+  grid-template-columns: 36px minmax(0, 1fr) auto 28px;
+  align-items: center;
+  gap: 8px;
+}
+.color-row input[type='color'] {
+  width: 36px;
+  height: 32px;
+  padding: 0;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: none;
+  cursor: pointer;
+}
+.color-row .mono {
+  font-size: 12px;
+}
+.modal-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+}
+.form-error {
+  color: var(--danger);
+  font-size: 13px;
+}
+.lib-picker {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.lib-source {
+  padding: 8px;
+  border-radius: 10px;
+  background: var(--raised);
+}
+.ref-thumb .ref-view {
+  position: absolute;
+  left: 2px;
+  bottom: 2px;
+  max-width: calc(100% - 4px);
+  height: 18px;
+  padding: 0 2px;
+  border: 0;
+  border-radius: 9px;
+  font-size: 11px;
+  background: var(--badge-bg);
+  color: var(--badge-fg);
+}
+.ref-busy-tile {
+  display: grid;
+  place-items: center;
+  font-size: 11px;
+  color: var(--fg-3);
+}
+.char-chip {
+  padding-left: 5px;
+}
+.char-chip:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
 }
 
 /* ---------- 模板 / 项目 ---------- */

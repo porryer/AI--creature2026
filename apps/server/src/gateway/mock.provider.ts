@@ -13,6 +13,13 @@ const MAX_EMBED_BYTES = 8 * 1024 * 1024;
 const wrap = (w: number, h: number, body: string) => `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${w} ${h}" width="${w}" height="${h}">${body}</svg>`;
 
 /** 把参考图内嵌为 SVG <image>（data URI），用于模拟"参考图生成" */
+/** 每个角色的第一张参考图（按出现顺序） */
+function characters(refs: ReferenceInput[]): ReferenceInput[] {
+  const first = new Map<string, ReferenceInput>();
+  for (const r of refs) if (r.role === 'character' && r.data.length <= MAX_EMBED_BYTES && !first.has(r.group ?? '')) first.set(r.group ?? '', r);
+  return [...first.values()];
+}
+
 function imageTag(r: ReferenceInput, x: number, y: number, w: number, h: number, fit: 'slice' | 'meet'): string {
   const href = `data:${r.mime};base64,${r.data.toString('base64')}`;
   return `<image href="${href}" x="${Math.round(x)}" y="${Math.round(y)}" width="${w}" height="${h}" preserveAspectRatio="xMidYMid ${fit}"/>`;
@@ -60,17 +67,28 @@ export class MockProvider implements ProviderAdapter {
     if (req.model.editOnly) return [renderEdit(req.prompt, p, ref('source'), ref('mask'))];
     if (req.modality === 'image') {
       const { w, h } = sizeForRatio(p.ratio ?? '3:4', LONG_SIDE[p.resolution ?? '1k'] ?? 1024);
-      const subject = ref('subject', 'character');
       const style = ref('style');
+      const people = characters(req.references);
+      const subjects = people.length ? people : [ref('subject', 'character')].filter((r): r is ReferenceInput => !!r);
+      const logo = ref('logo');
       return Array.from({ length: p.count ?? 1 }, (_, i) => {
-        const art = artSvg(req.prompt + (style ? ':style' : ''), { w, h, variant: i });
+        const art = artSvg(req.prompt + (style ? ':style' : ''), { w, h, variant: i, palette: req.palette });
         let svg = art;
-        // 风格参考：以参考图为底，叠加生成画面；主体 / 角色参考：把参考图放进新场景的中央
+        // 风格参考：以参考图为底，叠加生成画面；主体 / 角色参考：把参考图放进新场景（两个角色时左右并排）
         if (style) svg = wrap(w, h, `${imageTag(style, 0, 0, w, h, 'slice')}<g opacity="0.55">${art}</g>`);
-        if (subject) {
-          const sw = Math.round(w * 0.62);
+        if (subjects.length) {
+          const two = subjects.length > 1;
+          const sw = Math.round(w * (two ? 0.46 : 0.62));
           const sh = Math.round(h * 0.62);
-          svg = wrap(w, h, `${style ? svg : art}${imageTag(subject, (w - sw) / 2, (h - sh) / 2 + h * 0.06, sw, sh, 'meet')}`);
+          const y = (h - sh) / 2 + h * 0.06;
+          const tags = subjects.slice(0, 2).map((r, k) => imageTag(r, two ? w * (k === 0 ? 0.03 : 0.51) : (w - sw) / 2, y, sw, sh, 'meet'));
+          svg = wrap(w, h, `${style ? svg : art}${tags.join('')}`);
+        }
+        // 品牌 Logo 放在右上角（右下角是"AI 生成"标识）
+        if (logo) {
+          const lw = Math.round(Math.min(w, h) * 0.18);
+          const m = Math.round(Math.min(w, h) * 0.04);
+          svg = wrap(w, h, `${svg}<g id="brand-logo">${imageTag(logo, w - lw - m, m, lw, lw, 'meet')}</g>`);
         }
         return { kind: 'image' as const, mime: 'image/svg+xml', data: Buffer.from(svg), width: w, height: h };
       });
@@ -81,7 +99,10 @@ export class MockProvider implements ProviderAdapter {
       const first = ref('first_frame');
       const last = ref('last_frame');
       // 图生视频：以首帧为画面主体；有尾帧时在后半段渐变到尾帧
-      let inner = first ? wrap(w, h, imageTag(first, 0, 0, w, h, 'slice')) : artSvg(req.prompt, { w, h, variant: 0 });
+      let inner = first ? wrap(w, h, imageTag(first, 0, 0, w, h, 'slice')) : artSvg(req.prompt, { w, h, variant: 0, palette: req.palette });
+      // 引用角色且没有首帧：角色出现在画面中央
+      const person = characters(req.references)[0];
+      if (person && !first) inner = wrap(w, h, `${inner}${imageTag(person, w * 0.19, h * 0.25, Math.round(w * 0.62), Math.round(h * 0.5), 'meet')}`);
       if (last) inner = wrap(w, h, `${inner}<g opacity="0">${imageTag(last, 0, 0, w, h, 'slice')}<animate attributeName="opacity" values="0;0;1" dur="${sec}s" repeatCount="indefinite"/></g>`);
       // 以 SVG 动画模拟视频画面（缓慢推近），时长写入 data-duration
       const svg =
@@ -100,7 +121,8 @@ export class MockProvider implements ProviderAdapter {
       const samples = synth(notes, noteSec, SAMPLE_RATE).subarray(0, sec * SAMPLE_RATE);
       return [{ kind: 'audio', mime: 'audio/wav', data: encodeWav(samples, SAMPLE_RATE), durationMs: sec * 1000 }];
     }
-    const text = req.operation === 'edit' ? mockTransform((p.transform as TransformKind) ?? '改写', req.prompt) : mockWriting(p.template, req.prompt, p.tone);
+    // 引用品牌套件时提示词后附有品牌规范，题目只取第一行
+    const text = req.operation === 'edit' ? mockTransform((p.transform as TransformKind) ?? '改写', req.prompt) : mockWriting(p.template, req.prompt.split('\n')[0], p.tone);
     return [{ kind: 'text', mime: 'text/plain; charset=utf-8', data: Buffer.from(text), text }];
   }
 }

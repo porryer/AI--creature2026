@@ -47,6 +47,19 @@ export interface ArtOptions {
   w?: number;
   h?: number;
   variant?: number;
+  /** 指定配色（如品牌标准色），否则按提示词挑选 */
+  palette?: string[];
+}
+
+const luminance = (hex: string) => {
+  const n = parseInt(hex.slice(1), 16);
+  return 0.2126 * ((n >> 16) & 255) + 0.7152 * ((n >> 8) & 255) + 0.0722 * (n & 255);
+};
+
+/** 把任意数量的颜色整理成由暗到亮的 5 个颜色 */
+function fitPalette(colors: string[]): string[] {
+  const sorted = [...colors].sort((a, b) => luminance(a) - luminance(b));
+  return Array.from({ length: 5 }, (_, i) => sorted[Math.round((i * (sorted.length - 1)) / 4)]);
 }
 
 /** 根据提示词生成一张抽象作品图（data URI）。同一 (prompt, variant, 尺寸) 永远得到同一张图。 */
@@ -58,13 +71,14 @@ export function artFor(prompt: string, opts: ArtOptions = {}): string {
 export function artSvg(prompt: string, opts: ArtOptions = {}): string {
   const w = opts.w ?? 600;
   const h = opts.h ?? 800;
-  const key = `${prompt}|${opts.variant ?? 0}|${w}x${h}`;
+  const custom = opts.palette?.filter((c) => /^#[0-9a-fA-F]{6}$/.test(c)) ?? [];
+  const key = `${prompt}|${opts.variant ?? 0}|${w}x${h}|${custom.join(',')}`;
   const cached = cache.get(key);
   if (cached) return cached;
 
   const pal = pickPalette(prompt);
   const r = rng(hash(key));
-  const c = pal.colors;
+  const c = custom.length >= 2 ? fitPalette(custom) : pal.colors;
   const pick = () => c[Math.floor(r() * c.length)];
   const id = `g${hash(key).toString(36)}`;
 

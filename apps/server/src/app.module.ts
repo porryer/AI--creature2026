@@ -17,6 +17,7 @@ import { GatewayModule } from './gateway/gateway.module';
 import { ModelGateway } from './gateway/model-gateway.service';
 import { GenerationsModule } from './generations/generations.module';
 import { JobsService } from './jobs.service';
+import { LibraryModule } from './library/library.module';
 import { MetricsService } from './observability/metrics.service';
 import { httpObservability, ObservabilityModule } from './observability/observability.module';
 import { UsersModule } from './users/users.module';
@@ -41,7 +42,7 @@ export class AppModule {
   static forRoot(config: AppConfig): DynamicModule {
     return {
       module: AppModule,
-      imports: [CoreModule.forRoot(config), AuthModule, CreditsModule, UsersModule, GatewayModule, AssetsModule, GenerationsModule, BillingModule, CanvasesModule, CommunityModule, AdminModule, ObservabilityModule],
+      imports: [CoreModule.forRoot(config), AuthModule, CreditsModule, UsersModule, GatewayModule, AssetsModule, GenerationsModule, BillingModule, CanvasesModule, CommunityModule, AdminModule, LibraryModule, ObservabilityModule],
       controllers: [HealthController],
       providers: [JobsService],
     };

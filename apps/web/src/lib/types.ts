@@ -1,4 +1,4 @@
-import type { Modality, ModelInfo } from '@creature/shared';
+import type { Modality, ModelInfo, TaskContextDTO } from '@creature/shared';
 
 export type { Modality, ModelInfo, RoutingStrategy, Tier } from '@creature/shared';
 
@@ -35,6 +35,8 @@ export interface Task {
   source: 'studio' | 'canvas' | 'agent' | 'template';
   /** 图像编辑任务的源图 */
   sourceAssetId?: string;
+  /** 引用的角色与品牌套件（接入后端时） */
+  context?: TaskContextDTO;
   count: number;
   /** 模拟用：排队时长与生成时长（毫秒） */
   queueMs: number;
