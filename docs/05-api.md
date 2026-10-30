@@ -50,7 +50,7 @@
 | 429 | `RATE_LIMITED` | 请求过于频繁（验证码、上传、发布、举报的每日上限；生成任务每分钟提交次数与进行中任务数），附 `Retry-After` |
 | 503 | `MODEL_UNAVAILABLE` | 所选模型及备选模型均不可用 |
 
-### 1.3 实现状态（Sprint 1–11）
+### 1.3 实现状态（Sprint 1–12）
 
 已实现（`apps/server`，带集成测试）：
 
@@ -64,7 +64,7 @@
 | 资产 | `GET /assets?kind=&favorite=&q=&folder=`（`folder=none` 为未归档）、`GET /assets/{id}`、`PATCH /assets/{id}`、`DELETE /assets/{id}`（同时撤回广场发布）、`POST /assets/move`、`GET /assets/{id}/download`、`GET /files/{token}`（签名文件；带 `dl` 参数时以附件下载） |
 | 文件夹 | `GET /asset-folders`（含作品数）、`POST /asset-folders`、`PATCH /asset-folders/{id}`、`DELETE /asset-folders/{id}`（作品移回未归档） |
 | 上传 | `POST /assets/uploads`、`PUT /uploads/{id}?exp=&sig=`（签名地址，无需登录态）、`POST /assets/uploads/{id}/complete`，见 3.7 |
-| 项目与画布 | `GET /projects`、`POST /projects`（同时创建画布）、`PATCH /projects/{id}`、`DELETE /projects/{id}`、`GET /canvases/latest`、`GET /canvases/{id}`、`PUT /canvases/{id}`，见 3.8 |
+| 项目与画布 | `GET /projects`、`POST /projects`（同时创建画布）、`PATCH /projects/{id}`、`DELETE /projects/{id}`、`GET /canvases/latest`、`GET /canvases/{id}`、`PUT /canvases/{id}`，见 3.8；历史版本 `GET` / `POST /canvases/{id}/snapshots`、`GET /canvases/{id}/snapshots/{sid}`、`POST /canvases/{id}/snapshots/{sid}/restore`；分享 `GET` / `PUT` / `DELETE /canvases/{id}/share`、`GET /shared/canvases/{token}`（无需登录），见 3.14 |
 | 社区 | `GET /feed?tab=recommend\|latest\|hot\|mine&kind=&cursor=`、`POST /posts`、`GET /posts/{id}`、`DELETE /posts/{id}`（作者撤回）、`PUT` / `DELETE /posts/{id}/like`、`POST /posts/{id}/remix`、`POST /reports`，见 3.9 |
 | 角色与品牌 | `GET` / `POST /characters`、`GET` / `PATCH` / `DELETE /characters/{id}`、`GET` / `POST /brand-kits`、`GET` / `PATCH` / `DELETE /brand-kits/{id}`，生成时通过 `context` 引用，见 3.11 |
 | 模板 | `GET /templates?category=&kind=`、`GET /templates/{id}`、`POST /templates/{id}/generate`、`POST /templates/{id}/use`、`PUT /templates/{id}/rating`，见 3.12 |
@@ -152,7 +152,10 @@
 | POST | `/canvases/{id}/estimate` | 估算运行指定节点所需积分 |
 | POST | `/canvases/{id}/runs` | 运行节点 `{ node_ids: [], mode: "selected" \| "all" \| "stale" }` |
 | GET | `/canvases/{id}/runs/{runId}` | 运行状态 |
-| PATCH | `/canvases/{id}/share` | 分享设置 |
+| PATCH | `/canvases/{id}/share` | 分享设置（**当前实现**为 `PUT` / `DELETE`，见 3.14） |
+| GET / POST | `/canvases/{id}/snapshots` | 历史版本列表 / 手动保存版本 |
+| POST | `/canvases/{id}/snapshots/{sid}/restore` | 恢复到历史版本 |
+| GET | `/shared/canvases/{token}` | 分享页（只读，无需登录） |
 | WS | `/ws/canvas/{id}` | Yjs 协作通道 |
 
 ### 2.8 Agent
@@ -565,6 +568,19 @@ data: {"session_status":"awaiting_confirm"}
 2. `DELETE /v1/me { "code": "123456" }` → `200 { status: "deleting", requested_at, delete_after }`。有排队或生成中的任务时 `409 ACCOUNT_BUSY`。成功后所有会话立即吊销，原访问令牌在所有实例上返回 `403 ACCOUNT_DELETING`。
 3. 冷静期（15 天）内用该手机号登录即撤销注销，登录响应 `deletion_canceled: true`。
 4. 冷静期满后由维护任务匿名化（多实例 `SKIP LOCKED` 认领）：昵称改为"已注销用户"、清除手机号（同一手机号可重新注册为新账号）、套餐重置；作品标记删除并清除标题与正文（文件由存储清理立即删除，不等宽限期；内容编号保留以便追溯）；广场发布撤回、点赞删除并重算计数；角色、品牌套件、项目删除并清空内容，画布文档清空；埋点事件解除关联。生成记录（合规留存）、订单与积分流水保留但不再能关联到个人；肖像授权材料按合规要求保留。已注销或注销中的账号不能在后台修改状态。
+
+### 3.14 画布历史版本与分享链接
+
+**历史版本**（`CanvasSnapshotDTO`：`id, version, node_count, reason, label, created_at`）：
+- 自动：保存画布时，若距上一个版本超过 10 分钟，先把被覆盖的内容记为 `auto` 版本（空画布不记），最多保留 50 个；
+- 手动：`POST /canvases/{id}/snapshots { "label": "给客户的初稿" }` → `201`，记录当前内容，最多保留 30 个；
+- 查看：`GET /canvases/{id}/snapshots/{sid}` 返回与 `GET /canvases/{id}` 相同结构（产物按任务补全）；
+- 恢复：`POST /canvases/{id}/snapshots/{sid}/restore { "version": 当前版本号 }` → `200` 恢复后的画布（版本号 + 1）；恢复前的内容自动记为 `restore` 版本，可以再恢复回来；版本号不一致 `409 CANVAS_VERSION_CONFLICT`。
+
+**分享链接**：
+- `PUT /canvases/{id}/share { "show_prompts": false }` → `CanvasShareDTO { token, path: "/#s/<token>", show_prompts, view_count, created_at }`。每个画布最多一个有效链接，重复调用返回同一链接并更新 `show_prompts`；`DELETE` 关闭后原链接立即失效，再次分享生成新链接。
+- `GET /shared/canvases/{token}`（无需登录，`Cache-Control: no-store`、`X-Robots-Tag: noindex`）→ `SharedCanvasDTO`：画布名、作者昵称、节点（类型、标题、位置、状态、产物）、连线与视口。不含小造对话、模型与参数；提示词只在 `show_prompts` 为 `true` 时返回。产物地址为带 AI 显式标识的交付文件（2 小时有效）。链接已关闭、项目已删除或作者账号不可用（冻结、封禁、注销中）时返回 `404`。每次访问计入 `view_count`。
+- 注销账号匿名化时删除全部历史版本并关闭分享。
 
 ## 4. 开放 API（P2）
 

@@ -3531,3 +3531,71 @@ table.data th.num {
   border-radius: var(--r-md);
   background: color-mix(in srgb, var(--danger-soft) 40%, transparent);
 }
+
+/* ---------- 画布历史版本与分享页 ---------- */
+.snapshot-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+}
+.snapshot-list li {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 10px 0;
+  border-bottom: 1px solid var(--line);
+}
+.snapshot-list .grow {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+  font-size: 13px;
+}
+.snapshot-list .subtle {
+  font-size: 12px;
+}
+.canvas-title .icon-btn {
+  width: 28px;
+  height: 28px;
+}
+.share-page {
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  background: var(--bg);
+}
+.share-head {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 12px max(16px, env(safe-area-inset-left, 0px));
+  border-bottom: 1px solid var(--line);
+  background: var(--surface);
+}
+.share-head h1 {
+  font-size: 16px;
+  margin: 0;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.share-head .subtle {
+  font-size: 12px;
+}
+.share-stage {
+  flex: 1;
+}
+.node-body .share-text {
+  display: block;
+  white-space: pre-wrap;
+  max-height: 220px;
+  overflow: auto;
+  -webkit-line-clamp: unset;
+  line-clamp: unset;
+}
+a.btn {
+  text-decoration: none;
+}

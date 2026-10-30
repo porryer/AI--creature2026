@@ -101,6 +101,8 @@ export class AccountService {
     await q.query(`UPDATE brand_kits SET deleted_at = COALESCE(deleted_at, now()), name = '', tone = '', banned = '[]', fonts = '[]' WHERE user_id = $1`, [id]);
     await q.query(`UPDATE projects SET deleted_at = COALESCE(deleted_at, now()), name = '' WHERE user_id = $1`, [id]);
     await q.query(`UPDATE canvases SET doc = '{}', name = '' WHERE user_id = $1`, [id]);
+    await q.query('DELETE FROM canvas_snapshots WHERE user_id = $1', [id]);
+    await q.query('UPDATE canvas_shares SET revoked_at = now() WHERE user_id = $1 AND revoked_at IS NULL', [id]);
     // 点赞：删除并重算被点赞作品的计数
     const liked = await q.query<{ post_id: string }>('DELETE FROM post_likes WHERE user_id = $1 RETURNING post_id', [id]);
     if (liked.length) {

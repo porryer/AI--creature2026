@@ -1,5 +1,8 @@
 import type {
   AdminAnalyticsDTO,
+  CanvasShareDTO,
+  CanvasSnapshotDTO,
+  SharedCanvasDTO,
   DeletionRequestDTO,
   BrandKitDTO,
   ClientEvent,
@@ -247,6 +250,14 @@ export const api = {
   latestCanvas: () => call<CanvasDTO>('GET', '/canvases/latest'),
   canvas: (id: string) => call<CanvasDTO>('GET', `/canvases/${id}`),
   saveCanvas: (id: string, body: { doc: CanvasDocDTO; version: number; name?: string }) => call<{ version: number; updated_at: string }>('PUT', `/canvases/${id}`, body),
+  canvasSnapshots: (id: string) => call<{ data: CanvasSnapshotDTO[] }>('GET', `/canvases/${id}/snapshots`),
+  createSnapshot: (id: string, label: string) => call<CanvasSnapshotDTO>('POST', `/canvases/${id}/snapshots`, { label }),
+  restoreSnapshot: (id: string, snapshotId: string, version: number) => call<CanvasDTO>('POST', `/canvases/${id}/snapshots/${snapshotId}/restore`, { version }),
+  canvasShare: (id: string) => call<{ share: CanvasShareDTO | null }>('GET', `/canvases/${id}/share`),
+  shareCanvas: (id: string, showPrompts: boolean) => call<CanvasShareDTO>('PUT', `/canvases/${id}/share`, { show_prompts: showPrompts }),
+  unshareCanvas: (id: string) => call<void>('DELETE', `/canvases/${id}/share`),
+  /** 分享页：无需登录 */
+  sharedCanvas: (token: string) => raw<SharedCanvasDTO>('GET', `/shared/canvases/${encodeURIComponent(token)}`),
 };
 
 /**

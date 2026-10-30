@@ -1,10 +1,12 @@
-import { AudioLines, Bot, Image as ImageIcon, Maximize, Minus, PenLine, Play, Plus, Send, Trash2, Video, X } from 'lucide-react';
+import { Bot, History, Maximize, Minus, Play, Plus, Send, Share2, Trash2, X } from 'lucide-react';
 import { useCallback, useEffect, useMemo, useRef, useState, type PointerEvent as RPointerEvent } from 'react';
 import { Art } from '../components/Art';
 import { Status } from '../components/ui';
 import { api, ApiError, BACKEND } from '../lib/api';
 import { estimateCredits, findTemplate, modelByCode, routeModel, type CanvasDocDTO, type CanvasDTO, type CanvasNodeDTO } from '@creature/shared';
 import { track } from '../lib/analytics';
+import { edgePath, KIND_META, NODE_W } from '../lib/canvas';
+import { HistoryDrawer, ShareDrawer } from '../components/CanvasPanels';
 import { errorText, outputFromDTO, uid, useStore } from '../lib/store';
 import type { Modality, Output, Task, TaskStatus } from '../lib/types';
 
@@ -64,14 +66,6 @@ interface Msg {
   typing?: boolean;
 }
 
-const NODE_W = 248;
-const PORT_Y = 24;
-const KIND_META: Record<Modality, { label: string; icon: typeof ImageIcon; color: string }> = {
-  text: { label: '文本', icon: PenLine, color: 'var(--gold)' },
-  image: { label: '图像生成', icon: ImageIcon, color: 'var(--accent)' },
-  video: { label: '视频生成', icon: Video, color: 'var(--accent-2)' },
-  audio: { label: '配音', icon: AudioLines, color: 'var(--violet)' },
-};
 
 const BASE_PROMPT = '山野咖啡秋季新品枫糖拿铁，暖色逆光，胶片质感，落叶';
 const GREETING: Msg = { id: 'm0', role: 'assistant', text: '你好，我是小造。告诉我你要做的内容，我会先给出执行计划和积分预估，你确认后再开始生成。' };
@@ -254,6 +248,7 @@ export function Canvas() {
   const [sync, setSync] = useState<SyncState>(persist ? 'loading' : 'saved');
   const [input, setInput] = useState('');
   const [agentOpen, setAgentOpen] = useState(false);
+  const [panel, setPanel] = useState<'history' | 'share' | null>(null);
   const [panning, setPanning] = useState(false);
   const stage = useRef<HTMLDivElement>(null);
   const logRef = useRef<HTMLDivElement>(null);
@@ -676,6 +671,19 @@ export function Canvas() {
 
   return (
     <div className="canvas-wrap">
+      {/* 抽屉放在画布舞台之外：舞台会捕获指针事件用于平移 */}
+      {panel === 'history' && canvasRef.current && (
+        <HistoryDrawer
+          canvasId={canvasRef.current.id}
+          version={() => canvasRef.current?.version ?? 1}
+          onRestored={(c) => {
+            applyCanvas(c);
+            setPanel(null);
+          }}
+          onClose={() => setPanel(null)}
+        />
+      )}
+      {panel === 'share' && canvasRef.current && <ShareDrawer canvasId={canvasRef.current.id} onClose={() => setPanel(null)} />}
       <div
         ref={stage}
         className={`canvas-stage ${panning ? 'panning' : ''}`}
@@ -717,6 +725,16 @@ export function Canvas() {
           <span className="subtle">
             · {liveNodes.length} 个节点 · {persist ? SYNC_TEXT[sync] : '演示画布不保存'}
           </span>
+          {persist && canvasRef.current && (
+            <>
+              <button className="icon-btn" aria-label="历史版本" title="历史版本" onClick={() => void flush.current().then(() => setPanel('history'))}>
+                <History size={15} />
+              </button>
+              <button className="icon-btn" aria-label="分享" title="分享只读链接" onClick={() => setPanel('share')}>
+                <Share2 size={15} />
+              </button>
+            </>
+          )}
         </div>
 
         <div className="canvas-world" style={{ transform: `translate(${view.x}px, ${view.y}px) scale(${view.k})` }}>
@@ -725,13 +743,8 @@ export function Canvas() {
               const a = byId.get(e.from);
               const b = byId.get(e.to);
               if (!a || !b) return null;
-              const x1 = a.x + NODE_W;
-              const y1 = a.y + PORT_Y;
-              const x2 = b.x;
-              const y2 = b.y + PORT_Y;
-              const dx = Math.max(60, Math.abs(x2 - x1) / 2);
               const flowing = b.status === 'running' || b.status === 'queued' || b.status === 'waiting';
-              return <path key={e.id} className={flowing ? 'flow' : ''} d={`M${x1},${y1} C${x1 + dx},${y1} ${x2 - dx},${y2} ${x2},${y2}`} stroke={KIND_META[a.kind].color} opacity={0.75} />;
+              return <path key={e.id} className={flowing ? 'flow' : ''} d={edgePath(a, b)} stroke={KIND_META[a.kind].color} opacity={0.75} />;
             })}
           </svg>
           {liveNodes.map((n) => {

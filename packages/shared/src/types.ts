@@ -230,6 +230,41 @@ export interface CanvasDTO {
   doc: CanvasDocDTO;
 }
 
+/** 画布历史版本（列表项，不含内容） */
+export interface CanvasSnapshotDTO {
+  id: string;
+  /** 记录时画布的版本号 */
+  version: number;
+  node_count: number;
+  /** auto：编辑时自动记录；manual：手动保存；restore：恢复其他版本前的自动备份 */
+  reason: 'auto' | 'manual' | 'restore';
+  label: string;
+  created_at: string;
+}
+
+/** 历史版本最多保留的数量（自动与手动分别计算） */
+export const CANVAS_SNAPSHOT_LIMIT = { auto: 50, manual: 30 } as const;
+
+export interface CanvasShareDTO {
+  token: string;
+  /** 分享页地址（相对于站点根路径） */
+  path: string;
+  show_prompts: boolean;
+  view_count: number;
+  created_at: string;
+}
+
+/** 分享页看到的只读画布：不含小造对话与模型参数；提示词只在分享者允许时返回 */
+export interface SharedCanvasDTO {
+  name: string;
+  owner: string;
+  updated_at: string;
+  show_prompts: boolean;
+  nodes: { id: string; kind: Modality; title: string; prompt: string | null; x: number; y: number; status: string; outputs: OutputDTO[] }[];
+  edges: { id: string; from: string; to: string }[];
+  viewport?: { x: number; y: number; k: number };
+}
+
 export interface ProjectDTO {
   id: string;
   name: string;

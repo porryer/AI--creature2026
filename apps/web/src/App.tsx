@@ -2,7 +2,7 @@ import { AssetViewer } from './components/AssetViewer';
 import { ImageEditor } from './components/ImageEditor';
 import { NavRail, TabBar, TopBar } from './components/Shell';
 import { Toasts } from './components/ui';
-import { useEffect } from 'react';
+import { useEffect, useState } from 'react';
 import { track } from './lib/analytics';
 import { useRoute } from './lib/router';
 import { useStore } from './lib/store';
@@ -13,11 +13,32 @@ import { Canvas } from './pages/Canvas';
 import { Explore } from './pages/Explore';
 import { Pricing } from './pages/Pricing';
 import { Projects } from './pages/Projects';
+import { SharedCanvas } from './pages/SharedCanvas';
 import { Studio } from './pages/Studio';
 import { Templates } from './pages/Templates';
 
+/** 分享页地址：#s/<令牌>，无需登录 */
+function useShareToken(): string | null {
+  const read = () => /^#s\/([A-Za-z0-9_-]{16,64})$/.exec(window.location.hash)?.[1] ?? null;
+  const [token, setToken] = useState(read);
+  useEffect(() => {
+    const on = () => setToken(read());
+    window.addEventListener('hashchange', on);
+    return () => window.removeEventListener('hashchange', on);
+  }, []);
+  return token;
+}
+
 export function App() {
   const { state } = useStore();
+  const share = useShareToken();
+  if (share)
+    return (
+      <>
+        <SharedCanvas token={share} />
+        <Toasts />
+      </>
+    );
   if (state.auth === 'pending') return <div className="splash">正在连接造物…</div>;
   if (state.auth === 'anon')
     return (
