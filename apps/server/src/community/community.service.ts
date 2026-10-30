@@ -37,13 +37,16 @@ export interface PostRow {
   height: number | null;
   duration_ms: number | null;
   content_id: string;
+  comment_count: number;
   liked: boolean;
+  followed: boolean;
 }
 
 /** 列表与详情共用的查询：作品 + 作者 + 文件 + 当前用户是否点赞（$1 为当前用户） */
 export const POST_SELECT = `
   SELECT p.*, u.nickname AS author_nickname, a.storage_key, a.width, a.height, a.duration_ms, a.content_id,
-         EXISTS (SELECT 1 FROM post_likes l WHERE l.post_id = p.id AND l.user_id = $1) AS liked
+         EXISTS (SELECT 1 FROM post_likes l WHERE l.post_id = p.id AND l.user_id = $1) AS liked,
+         EXISTS (SELECT 1 FROM user_follows f WHERE f.follower_id = $1 AND f.followee_id = p.author_id) AS followed
     FROM posts p JOIN users u ON u.id = p.author_id JOIN assets a ON a.id = p.asset_id`;
 
 // 推荐：互动越多越靠前，按发布时长衰减（类似 Hacker News 排序）
@@ -53,6 +56,7 @@ const ORDER: Record<FeedTab, string> = {
   latest: 'p.published_at DESC, p.id DESC',
   hot: 'p.like_count DESC, p.published_at DESC, p.id DESC',
   mine: 'p.created_at DESC, p.id DESC',
+  following: 'p.published_at DESC, p.id DESC',
 };
 
 interface AssetForPost {
@@ -87,7 +91,7 @@ export class CommunityService {
       title: r.title,
       prompt: r.show_prompt || mine ? r.prompt : null,
       tags: r.tags ?? [],
-      author: { id: r.author_id, nickname: r.author_nickname },
+      author: { id: r.author_id, nickname: r.author_nickname, followed: r.followed },
       model: r.model_name,
       url: this.storage.signedUrl(r.storage_key),
       width: r.width ?? undefined,
@@ -96,6 +100,7 @@ export class CommunityService {
       content_id: r.content_id,
       like_count: r.like_count,
       remix_count: r.remix_count,
+      comment_count: r.comment_count,
       liked: r.liked,
       mine,
       status: r.status,
@@ -104,10 +109,23 @@ export class CommunityService {
     };
   }
 
-  /** 广场列表；mine 为自己的全部发布（含审核中、已隐藏） */
-  async feed(viewerId: string, f: { tab: FeedTab; kind?: 'image' | 'video'; cursor?: string; limit: number }): Promise<Page<PostDTO>> {
+  /** 广场列表；mine 为自己的全部发布（含审核中、已隐藏），following 为关注的创作者的发布，author 为某个创作者主页 */
+  async feed(viewerId: string, f: { tab: FeedTab; kind?: 'image' | 'video'; cursor?: string; limit: number; author?: string }): Promise<Page<PostDTO>> {
     const offset = f.cursor && /^o\d{1,5}$/.test(f.cursor) ? Number(f.cursor.slice(1)) : 0;
-    const where = f.tab === 'mine' ? `p.author_id = $1 AND p.status <> 'removed'` : `p.status = 'published'`;
+    const where =
+      f.tab === 'mine'
+        ? `p.author_id = $1 AND p.status <> 'removed'`
+        : f.tab === 'following'
+          ? `p.status = 'published' AND EXISTS (SELECT 1 FROM user_follows f WHERE f.follower_id = $1 AND f.followee_id = p.author_id)`
+          : `p.status = 'published'`;
+    if (f.author) {
+      const rows = await this.db.query<PostRow>(
+        `${POST_SELECT} WHERE p.status = 'published' AND p.author_id = $2 AND ($3::text IS NULL OR p.kind = $3) ORDER BY ${ORDER.latest} LIMIT $4 OFFSET $5`,
+        [viewerId, f.author, f.kind ?? null, f.limit + 1, offset],
+      );
+      const page = rows.slice(0, f.limit);
+      return { data: page.map((r) => this.toDTO(r, viewerId)), next_cursor: rows.length > f.limit ? `o${offset + f.limit}` : null };
+    }
     const rows = await this.db.query<PostRow>(
       `${POST_SELECT} WHERE ${where} AND ($2::text IS NULL OR p.kind = $2) ORDER BY ${ORDER[f.tab]} LIMIT $3 OFFSET $4`,
       [viewerId, f.kind ?? null, f.limit + 1, offset],

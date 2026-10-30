@@ -1,8 +1,9 @@
-import { REPORT_REASONS, type FeedTab, type PostDTO, type PostStatus, type ReportReason } from '@creature/shared';
-import { ArrowRight, AudioLines, Bot, Flag, Heart, Image as ImageIcon, PenLine, Repeat2, Undo2, Video } from 'lucide-react';
-import { useCallback, useEffect, useState } from 'react';
+import { REPORT_REASONS, type CreatorDTO, type FeedTab, type PostDTO, type PostStatus, type ReportReason } from '@creature/shared';
+import { ArrowRight, AudioLines, Bot, Flag, Heart, Image as ImageIcon, MessageCircle, PenLine, Repeat2, Undo2, UserPlus, Video } from 'lucide-react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { Art } from '../components/Art';
-import { Modal } from '../components/ui';
+import { Comments } from '../components/Comments';
+import { Drawer, Modal } from '../components/ui';
 import { api, BACKEND } from '../lib/api';
 import { fmt, POSTS } from '../lib/mock';
 import { useTemplates } from '../lib/templates';
@@ -149,6 +150,10 @@ interface FeedItem {
   /** 作者不公开提示词时为 null */
   prompt: string | null;
   author: string;
+  authorId?: string;
+  /** 当前用户是否关注了作者 */
+  followed?: boolean;
+  comments: number;
   kind: 'image' | 'video';
   ratio: string;
   likes: number;
@@ -163,13 +168,16 @@ interface FeedItem {
   contentId: string;
 }
 
-const fromMock = (p: Post): FeedItem => ({ id: p.id, title: p.title, prompt: p.prompt, author: p.author, kind: p.kind, ratio: p.ratio, likes: p.likes, remix: p.remix, model: p.model, tags: p.tags, durationSec: p.kind === 'video' ? 5 : undefined, contentId: `CRT-${p.id.toUpperCase()}-2026` });
+const fromMock = (p: Post): FeedItem => ({ id: p.id, title: p.title, prompt: p.prompt, author: p.author, comments: 0, kind: p.kind, ratio: p.ratio, likes: p.likes, remix: p.remix, model: p.model, tags: p.tags, durationSec: p.kind === 'video' ? 5 : undefined, contentId: `CRT-${p.id.toUpperCase()}-2026` });
 
 const fromDTO = (p: PostDTO): FeedItem => ({
   id: p.id,
   title: p.title,
   prompt: p.prompt,
   author: p.author.nickname,
+  authorId: p.author.id,
+  followed: p.author.followed,
+  comments: p.comment_count,
   kind: p.kind,
   ratio: p.width && p.height ? simplifyRatio(p.width, p.height) : '1:1',
   likes: p.like_count,
@@ -195,6 +203,7 @@ function Feed() {
   const [cursor, setCursor] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
   const [detail, setDetail] = useState<FeedItem | null>(null);
+  const [creator, setCreator] = useState<string | null>(null);
 
   const load = useCallback(
     async (more: boolean, from: string | null) => {
@@ -253,6 +262,19 @@ function Feed() {
     }
   };
 
+  const follow = async (authorId: string, on: boolean) => {
+    try {
+      const c = await api.setFollow(authorId, on);
+      setItems((list) => list?.map((x) => (x.authorId === authorId ? { ...x, followed: c.followed } : x)) ?? null);
+      setDetail((d) => (d?.authorId === authorId ? { ...d, followed: c.followed } : d));
+      toast(c.followed ? `已关注 ${c.nickname}，在"关注"里看 TA 的新作品` : `已取消关注 ${c.nickname}`);
+      return c;
+    } catch (e) {
+      toast(errorText(e), 'err');
+      return null;
+    }
+  };
+
   const withdraw = async (it: FeedItem) => {
     try {
       await api.withdrawPost(it.id);
@@ -268,7 +290,12 @@ function Feed() {
     ['recommend', '推荐'],
     ['latest', '最新'],
     ['hot', '最热'],
-    ...(live ? ([['mine', '我的发布']] as [FeedTab, string][]) : []),
+    ...(live
+      ? ([
+          ['following', '关注'],
+          ['mine', '我的发布'],
+        ] as [FeedTab, string][])
+      : []),
   ];
 
   return (
@@ -303,8 +330,8 @@ function Feed() {
       ) : items.length === 0 ? (
         <div className="empty">
           <ImageIcon size={28} />
-          <b>{tab === 'mine' ? '你还没有发布作品' : '广场上还没有作品'}</b>
-          <span>在资产库打开一张生成的图像或视频，点“发布到广场”</span>
+          <b>{tab === 'mine' ? '你还没有发布作品' : tab === 'following' ? '关注的创作者还没有发布作品' : '广场上还没有作品'}</b>
+          <span>{tab === 'following' ? '在作品详情里点作者旁的"关注"，TA 的新作品会出现在这里' : '在资产库打开一张生成的图像或视频，点“发布到广场”'}</span>
           <button className="btn" onClick={() => navigate('assets')}>
             去资产库
           </button>
@@ -324,6 +351,11 @@ function Feed() {
                 <span className="avatar sm">{p.author.slice(0, 1)}</span>
                 <span>{p.author}</span>
                 <span className="likes">
+                  {p.comments > 0 && (
+                    <>
+                      <MessageCircle size={13} /> {fmt(p.comments)}{' '}
+                    </>
+                  )}
                   <Heart size={13} fill={p.liked ? 'currentColor' : 'none'} /> {fmt(p.likes)}
                 </span>
               </div>
@@ -338,12 +370,43 @@ function Feed() {
           </button>
         </div>
       )}
-      {detail && <PostDetail item={detail} onClose={() => setDetail(null)} onLike={like} onRemix={remix} onWithdraw={withdraw} />}
+      {detail && (
+        <PostDetail
+          item={detail}
+          onClose={() => setDetail(null)}
+          onLike={like}
+          onRemix={remix}
+          onWithdraw={withdraw}
+          onFollow={(it) => it.authorId && void follow(it.authorId, !it.followed)}
+          onComments={(it, n) => patch(it.id, { comments: n })}
+          onAuthor={(id) => (setDetail(null), setCreator(id))}
+        />
+      )}
+      {creator && <CreatorDrawer id={creator} onClose={() => setCreator(null)} onFollow={follow} onOpen={(it) => (setCreator(null), setDetail(it))} />}
     </section>
   );
 }
 
-function PostDetail({ item, onClose, onLike, onRemix, onWithdraw }: { item: FeedItem; onClose: () => void; onLike: (i: FeedItem) => void; onRemix: (i: FeedItem) => void; onWithdraw: (i: FeedItem) => void }) {
+function PostDetail({
+  item,
+  onClose,
+  onLike,
+  onRemix,
+  onWithdraw,
+  onFollow,
+  onComments,
+  onAuthor,
+}: {
+  item: FeedItem;
+  onClose: () => void;
+  onLike: (i: FeedItem) => void;
+  onRemix: (i: FeedItem) => void;
+  onWithdraw: (i: FeedItem) => void;
+  onFollow: (i: FeedItem) => void;
+  onComments: (i: FeedItem, n: number) => void;
+  onAuthor: (id: string) => void;
+}) {
+  const live = BACKEND === 'api';
   const { toast } = useStore();
   const [reporting, setReporting] = useState(false);
   const [reason, setReason] = useState<ReportReason>('infringement');
@@ -372,12 +435,23 @@ function PostDetail({ item, onClose, onLike, onRemix, onWithdraw }: { item: Feed
           <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
             <span className="avatar">{item.author.slice(0, 1)}</span>
             <div>
-              <b>{item.author}</b>
+              {live && item.authorId ? (
+                <button className="link" style={{ fontWeight: 600 }} onClick={() => onAuthor(item.authorId!)}>
+                  {item.author}
+                </button>
+              ) : (
+                <b>{item.author}</b>
+              )}
               <div className="subtle" style={{ fontSize: 12 }}>
                 {fmt(item.likes)} 喜欢 · {fmt(item.remix)} 人做了同款
               </div>
             </div>
             {item.status && STATUS_TAG[item.status] && <span className={`tag ${STATUS_TAG[item.status]![1]}`} style={{ marginLeft: 'auto' }}>{STATUS_TAG[item.status]![0]}</span>}
+            {live && !item.mine && item.authorId && (
+              <button className={`btn sm ${item.followed ? '' : 'primary'}`} style={{ marginLeft: 'auto' }} aria-pressed={!!item.followed} onClick={() => onFollow(item)}>
+                {item.followed ? '已关注' : <><UserPlus size={14} /> 关注</>}
+              </button>
+            )}
           </div>
           <div className="field">
             <span className="field-label">提示词</span>
@@ -460,8 +534,72 @@ function PostDetail({ item, onClose, onLike, onRemix, onWithdraw }: { item: Feed
               )}
             </div>
           )}
+          {live && item.status === 'published' && <Comments postId={item.id} count={item.comments} onCount={(n) => onComments(item, n)} onAuthor={onAuthor} />}
         </div>
       </div>
     </Modal>
+  );
+}
+
+/** 创作者主页：粉丝 / 关注 / 作品 / 获赞，关注按钮与已发布作品 */
+function CreatorDrawer({ id, onClose, onFollow, onOpen }: { id: string; onClose: () => void; onFollow: (id: string, on: boolean) => Promise<CreatorDTO | null>; onOpen: (it: FeedItem) => void }) {
+  const { toast } = useStore();
+  const [c, setC] = useState<CreatorDTO | null>(null);
+  const [posts, setPosts] = useState<FeedItem[] | null>(null);
+  const close = useRef(onClose);
+  close.current = onClose;
+  useEffect(() => {
+    Promise.all([api.creator(id), api.feed('latest', undefined, null, id)]).then(
+      ([who, page]) => (setC(who), setPosts(page.data.map(fromDTO))),
+      (e) => (toast(errorText(e), 'err'), close.current()),
+    );
+  }, [id, toast]);
+  return (
+    <Drawer title={c ? c.nickname : '创作者'} onClose={onClose}>
+      {!c ? (
+        <p className="subtle">加载中…</p>
+      ) : (
+        <>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+            <span className="avatar" style={{ width: 48, height: 48, fontSize: 20 }}>
+              {c.nickname.slice(0, 1)}
+            </span>
+            <dl className="creator-stats">
+              {(
+                [
+                  ['粉丝', c.follower_count],
+                  ['关注', c.following_count],
+                  ['作品', c.post_count],
+                  ['获赞', c.like_count],
+                ] as const
+              ).map(([k, v]) => (
+                <div key={k}>
+                  <dd>{fmt(v)}</dd>
+                  <dt>{k}</dt>
+                </div>
+              ))}
+            </dl>
+          </div>
+          {!c.mine && (
+            <button className={`btn ${c.followed ? '' : 'primary'}`} aria-pressed={c.followed} onClick={() => void onFollow(c.id, !c.followed).then((n) => n && setC(n))}>
+              {c.followed ? '已关注' : <><UserPlus size={15} /> 关注</>}
+            </button>
+          )}
+          {posts === null ? (
+            <p className="subtle">加载中…</p>
+          ) : posts.length === 0 ? (
+            <p className="subtle">还没有发布作品</p>
+          ) : (
+            <div className="creator-grid">
+              {posts.map((p) => (
+                <button key={p.id} className="post" onClick={() => onOpen(p)} aria-label={`查看作品：${p.title}`}>
+                  <Art prompt={p.prompt ?? p.title} ratio="1:1" kind={p.kind} url={p.url} long={240} badge={false} />
+                </button>
+              ))}
+            </div>
+          )}
+        </>
+      )}
+    </Drawer>
   );
 }

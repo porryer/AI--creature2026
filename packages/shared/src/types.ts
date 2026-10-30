@@ -275,7 +275,7 @@ export interface ProjectDTO {
 
 // ---------- 灵感广场 ----------
 
-export type FeedTab = 'recommend' | 'latest' | 'hot' | 'mine';
+export type FeedTab = 'recommend' | 'latest' | 'hot' | 'mine' | 'following';
 export type PostStatus = 'reviewing' | 'published' | 'hidden' | 'removed';
 export type ReportReason = 'porn' | 'violence' | 'politics' | 'infringement' | 'ad' | 'other';
 
@@ -295,7 +295,8 @@ export interface PostDTO {
   /** 作者选择不公开提示词时为 null（作者本人仍可见） */
   prompt: string | null;
   tags: string[];
-  author: { id: string; nickname: string };
+  /** followed：当前用户是否关注了作者 */
+  author: { id: string; nickname: string; followed: boolean };
   model: string;
   url: string;
   width?: number;
@@ -304,11 +305,54 @@ export interface PostDTO {
   content_id: string;
   like_count: number;
   remix_count: number;
+  comment_count: number;
   liked: boolean;
   mine: boolean;
   status: PostStatus;
   published_at: string | null;
   created_at: string;
+}
+
+export const COMMENT_MAX_LENGTH = 500;
+
+export interface CommentDTO {
+  id: string;
+  post_id: string;
+  author: { id: string; nickname: string };
+  /** 回复某条回复时的被回复者 */
+  reply_to: { id: string; nickname: string } | null;
+  body: string;
+  created_at: string;
+  /** 评论作者或作品作者可以删除 */
+  can_delete: boolean;
+  mine: boolean;
+}
+
+/** 顶层评论及其回复（每条最多返回最早的 REPLIES_PREVIEW 条，其余用 replies 接口翻页） */
+export interface CommentThreadDTO extends CommentDTO {
+  reply_count: number;
+  replies: CommentDTO[];
+}
+export const REPLIES_PREVIEW = 3;
+
+/** 创作者主页 */
+export interface CreatorDTO {
+  id: string;
+  nickname: string;
+  follower_count: number;
+  following_count: number;
+  post_count: number;
+  like_count: number;
+  followed: boolean;
+  mine: boolean;
+}
+
+/** 后台评论复核：被举报自动隐藏的评论 */
+export interface CommentReviewDTO {
+  comment: CommentDTO & { status: 'published' | 'hidden' | 'removed' };
+  post: { id: string; title: string };
+  report_count: number;
+  reasons: { reason: ReportReason; count: number }[];
 }
 
 /** 做同款：预填到创作工作台的内容 */

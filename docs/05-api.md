@@ -50,7 +50,7 @@
 | 429 | `RATE_LIMITED` | 请求过于频繁（验证码、上传、发布、举报的每日上限；生成任务每分钟提交次数与进行中任务数），附 `Retry-After` |
 | 503 | `MODEL_UNAVAILABLE` | 所选模型及备选模型均不可用 |
 
-### 1.3 实现状态（Sprint 1–12）
+### 1.3 实现状态（Sprint 1–13）
 
 已实现（`apps/server`，带集成测试）：
 
@@ -65,7 +65,7 @@
 | 文件夹 | `GET /asset-folders`（含作品数）、`POST /asset-folders`、`PATCH /asset-folders/{id}`、`DELETE /asset-folders/{id}`（作品移回未归档） |
 | 上传 | `POST /assets/uploads`、`PUT /uploads/{id}?exp=&sig=`（签名地址，无需登录态）、`POST /assets/uploads/{id}/complete`，见 3.7 |
 | 项目与画布 | `GET /projects`、`POST /projects`（同时创建画布）、`PATCH /projects/{id}`、`DELETE /projects/{id}`、`GET /canvases/latest`、`GET /canvases/{id}`、`PUT /canvases/{id}`，见 3.8；历史版本 `GET` / `POST /canvases/{id}/snapshots`、`GET /canvases/{id}/snapshots/{sid}`、`POST /canvases/{id}/snapshots/{sid}/restore`；分享 `GET` / `PUT` / `DELETE /canvases/{id}/share`、`GET /shared/canvases/{token}`（无需登录），见 3.14 |
-| 社区 | `GET /feed?tab=recommend\|latest\|hot\|mine&kind=&cursor=`、`POST /posts`、`GET /posts/{id}`、`DELETE /posts/{id}`（作者撤回）、`PUT` / `DELETE /posts/{id}/like`、`POST /posts/{id}/remix`、`POST /reports`，见 3.9 |
+| 社区 | `GET /feed?tab=recommend\|latest\|hot\|mine&kind=&cursor=`、`POST /posts`、`GET /posts/{id}`、`DELETE /posts/{id}`（作者撤回）、`PUT` / `DELETE /posts/{id}/like`、`POST /posts/{id}/remix`、`POST /reports`、`GET` / `POST /posts/{id}/comments`、`GET /comments/{id}/replies`、`DELETE /comments/{id}`、`GET /creators/{id}`、`PUT` / `DELETE /creators/{id}/follow`，见 3.9 |
 | 角色与品牌 | `GET` / `POST /characters`、`GET` / `PATCH` / `DELETE /characters/{id}`、`GET` / `POST /brand-kits`、`GET` / `PATCH` / `DELETE /brand-kits/{id}`，生成时通过 `context` 引用，见 3.11 |
 | 模板 | `GET /templates?category=&kind=`、`GET /templates/{id}`、`POST /templates/{id}/generate`、`POST /templates/{id}/use`、`PUT /templates/{id}/rating`，见 3.12 |
 | 埋点 | `POST /analytics/events`（客户端界面行为），见 3.12 |
@@ -184,12 +184,16 @@
 
 | 方法 | 路径 | 说明 |
 |---|---|---|
-| GET | `/feed?tab=recommend\|latest\|hot\|mine\|following&kind=` | 灵感广场（`following` 待做） |
+| GET | `/feed?tab=recommend\|latest\|hot\|mine\|following&kind=&author=` | 灵感广场（`author` 为创作者主页的作品） |
 | POST | `/posts` | 发布作品到广场 |
 | GET | `/posts/{id}` | 作品详情 |
 | PUT / DELETE | `/posts/{id}/like` | 点赞 / 取消点赞（幂等） |
 | POST | `/posts/{id}/remix` | 做同款（返回预填参数） |
-| CRUD | `/posts/{id}/comments` | 评论 |
+| GET / POST | `/posts/{id}/comments` | 评论列表（含回复预览）/ 发表评论或回复 |
+| GET | `/comments/{id}/replies` | 某条评论的全部回复 |
+| DELETE | `/comments/{id}` | 删除评论（评论作者或作品作者） |
+| GET | `/creators/{id}` | 创作者主页 |
+| PUT / DELETE | `/creators/{id}/follow` | 关注 / 取消关注（幂等） |
 | POST | `/reports` | 举报 |
 
 ### 2.11 计费
@@ -472,7 +476,10 @@ data: {"session_status":"awaiting_confirm"}
 - **发布** `POST /v1/posts` `{ "asset_id": "ast_…", "title": "秋天的第一杯", "tags": ["咖啡"], "show_prompt": true }`：只能发布自己的 AI 生成图像 / 视频（上传素材 `400`）；同一作品重复发布返回已有那条；每人每天 20 条。发布时快照提示词、模型与参数。机审命中拦截词返回 `422 CONTENT_REJECTED`，命中复核词（公众人物、功效宣传等）`status = "reviewing"`，只有作者可见，人工通过后进入广场。
 - **列表** `GET /v1/feed`：`recommend` 按互动数与发布时长衰减排序，`latest` 按发布时间，`hot` 按点赞数，`mine` 为自己的全部发布（含审核中、已隐藏）。`cursor` 为上一页返回的 `next_cursor`。作者关闭 `show_prompt` 时他人看到的 `prompt` 为 `null`。
 - **做同款** `POST /v1/posts/{id}/remix` 返回 `{ modality, prompt, params, model_code }`（提示词未公开时为空字符串），每人只计一次，作者自己不计。
-- **举报** `POST /v1/reports` `{ "target_type": "post", "target_id": "pst_…", "reason": "infringement", "detail": "…" }`，`reason` 为 `porn / violence / politics / infringement / ad / other`。只能举报广场上可见的他人作品；同一人对同一作品只记一次；累计 3 人举报自动隐藏，进入后台复核；每人每天 20 次。
+- **举报** `POST /v1/reports` `{ "target_type": "post", "target_id": "pst_…", "reason": "infringement", "detail": "…" }`，`reason` 为 `porn / violence / politics / infringement / ad / other`。只能举报广场上可见的他人作品；同一人对同一作品只记一次；累计 3 人举报自动隐藏，进入后台复核；每人每天 20 次。`target_type` 也可以是 `comment`（规则相同，评论被隐藏后进入后台评论复核）。
+- **评论** `POST /v1/posts/{id}/comments { "body": "…", "parent_id": "cmt_…" }` → `201 CommentDTO`。只对已发布的作品开放；最多 500 字；机审命中拦截词 `422 CONTENT_REJECTED`；每人每天 200 条。只有一层回复：回复顶层评论时挂在它下面，回复某条回复时同样挂到顶层评论下，并在 `reply_to` 中记录被回复者。`GET /v1/posts/{id}/comments` 返回顶层评论（最新在前），每条附 `reply_count` 与最早 3 条回复；`GET /v1/comments/{id}/replies` 返回全部回复。评论作者或作品作者可以删除（`can_delete`），删除顶层评论时回复一并删除。作品的 `comment_count` 只计可见评论。
+- **关注** `PUT` / `DELETE /v1/creators/{id}/follow` → `CreatorDTO { nickname, follower_count, following_count, post_count, like_count, followed, mine }`；不能关注自己（`400`），最多关注 2000 人；对方账号不可用时 `404`。`GET /v1/feed?tab=following` 按发布时间返回关注的创作者的作品；作品的 `author.followed` 表示是否已关注。
+- **评论复核** `GET /v1/admin/comment-reviews`、`POST /v1/admin/comments/{id}/decision { action: "approve" | "remove" }`（`204`）：通过时恢复显示并驳回举报，删除时连同回复删除并认定举报成立；写人工审核记录与审计日志。
 
 ### 3.10 管理后台
 

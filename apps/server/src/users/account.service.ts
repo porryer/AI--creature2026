@@ -102,6 +102,16 @@ export class AccountService {
     await q.query(`UPDATE projects SET deleted_at = COALESCE(deleted_at, now()), name = '' WHERE user_id = $1`, [id]);
     await q.query(`UPDATE canvases SET doc = '{}', name = '' WHERE user_id = $1`, [id]);
     await q.query('DELETE FROM canvas_snapshots WHERE user_id = $1', [id]);
+    // 评论：清空内容并删除（顶层评论下的回复一并删除），同步作品的评论数；关注关系双向删除
+    const gone = await q.query<{ post_id: string }>(`UPDATE post_comments SET status = 'removed', body = CASE WHEN author_id = $1 THEN '' ELSE body END
+          WHERE (author_id = $1 OR parent_id IN (SELECT id FROM post_comments WHERE author_id = $1)) AND status <> 'removed' RETURNING post_id`, [id]);
+    if (gone.length) {
+      await q.query(
+        `UPDATE posts p SET comment_count = (SELECT COUNT(*)::int FROM post_comments c WHERE c.post_id = p.id AND c.status = 'published') WHERE p.id = ANY($1::text[])`,
+        [[...new Set(gone.map((g) => g.post_id))]],
+      );
+    }
+    await q.query('DELETE FROM user_follows WHERE follower_id = $1 OR followee_id = $1', [id]);
     await q.query('UPDATE canvas_shares SET revoked_at = now() WHERE user_id = $1 AND revoked_at IS NULL', [id]);
     // 点赞：删除并重算被点赞作品的计数
     const liked = await q.query<{ post_id: string }>('DELETE FROM post_likes WHERE user_id = $1 RETURNING post_id', [id]);

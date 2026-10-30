@@ -1,4 +1,4 @@
-import { REPORT_REASONS, type AdminModelDTO, type AdminOverviewDTO, type ReconcileRunDTO, type ReviewItemDTO } from '@creature/shared';
+import { REPORT_REASONS, type AdminModelDTO, type CommentReviewDTO, type AdminOverviewDTO, type ReconcileRunDTO, type ReviewItemDTO } from '@creature/shared';
 import { Check, Info, RefreshCw, ShieldOff, X } from 'lucide-react';
 import { useCallback, useEffect, useState } from 'react';
 import { Art } from '../components/Art';
@@ -218,10 +218,72 @@ function LiveAdmin() {
               )}
             </section>
           </div>
+          <CommentReviewPanel />
           <ReconcilePanel />
         </>
       )}
     </div>
+  );
+}
+
+/** 评论复核：被举报自动隐藏的评论；通过恢复显示，下架删除（含其下的回复） */
+function CommentReviewPanel() {
+  const { toast } = useStore();
+  const [list, setList] = useState<CommentReviewDTO[] | null>(null);
+  const [busy, setBusy] = useState<string | null>(null);
+  useEffect(() => {
+    api.commentReviews().then(
+      (r) => setList(r.data),
+      (e) => (setList([]), toast(errorText(e), 'err')),
+    );
+  }, [toast]);
+  const decide = async (item: CommentReviewDTO, action: 'approve' | 'remove') => {
+    setBusy(item.comment.id);
+    try {
+      await api.decideComment(item.comment.id, action);
+      setList((l) => l?.filter((x) => x.comment.id !== item.comment.id) ?? null);
+      toast(action === 'approve' ? '已恢复显示，相关举报已驳回' : '已删除评论，相关举报已处理');
+    } catch (e) {
+      toast(errorText(e), 'err');
+    } finally {
+      setBusy(null);
+    }
+  };
+  return (
+    <section className="panel" aria-labelledby="cmt-review-title" style={{ minWidth: 0 }}>
+      <div className="section-title" style={{ padding: '16px 18px 4px' }}>
+        <h3 id="cmt-review-title">评论复核</h3>
+        <span className="tag text">{list?.length ?? 0} 条待处理</span>
+      </div>
+      {list === null ? (
+        <p className="subtle" style={{ padding: 18 }}>
+          加载中…
+        </p>
+      ) : list.length === 0 ? (
+        <p className="subtle" style={{ padding: '4px 18px 18px', fontSize: 13 }}>
+          没有待复核的评论。被 3 人举报的评论会自动隐藏并出现在这里。
+        </p>
+      ) : (
+        list.map((item) => (
+          <div key={item.comment.id} className="mod-item">
+            <div className="grow">
+              <p>
+                <b>{item.comment.author.nickname}</b>：{item.comment.body}
+              </p>
+              <span className="subtle" style={{ fontSize: 12 }}>
+                作品「{item.post.title}」 · 被举报 {item.reasons.map((r) => `${REPORT_REASONS[r.reason]} ×${r.count}`).join('、')} · {timeAgo(Date.parse(item.comment.created_at))}
+              </span>
+            </div>
+            <button className="btn sm" aria-label={`恢复评论：${item.comment.body.slice(0, 10)}`} title="恢复" disabled={busy === item.comment.id} onClick={() => void decide(item, 'approve')}>
+              <Check size={14} />
+            </button>
+            <button className="btn sm danger" aria-label={`删除评论：${item.comment.body.slice(0, 10)}`} title="删除" disabled={busy === item.comment.id} onClick={() => void decide(item, 'remove')}>
+              <X size={14} />
+            </button>
+          </div>
+        ))
+      )}
+    </section>
   );
 }
 

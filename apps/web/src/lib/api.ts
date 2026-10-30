@@ -1,5 +1,9 @@
 import type {
   AdminAnalyticsDTO,
+  CommentDTO,
+  CommentReviewDTO,
+  CommentThreadDTO,
+  CreatorDTO,
   CanvasShareDTO,
   CanvasSnapshotDTO,
   SharedCanvasDTO,
@@ -208,7 +212,16 @@ export const api = {
     return call<AssetDTO>('POST', `/assets/uploads/${ticket.upload_id}/complete`, {});
   },
 
-  feed: (tab: FeedTab, kind?: 'image' | 'video', cursor?: string | null) => call<Page<PostDTO>>('GET', `/feed${qs({ tab, kind, cursor, limit: 20 })}`),
+  feed: (tab: FeedTab, kind?: 'image' | 'video', cursor?: string | null, author?: string) => call<Page<PostDTO>>('GET', `/feed${qs({ tab, kind, cursor, limit: 20, author })}`),
+  comments: (postId: string, cursor?: string | null) => call<Page<CommentThreadDTO>>('GET', `/posts/${postId}/comments${qs({ cursor, limit: 20 })}`),
+  replies: (commentId: string, cursor?: string | null) => call<Page<CommentDTO>>('GET', `/comments/${commentId}/replies${qs({ cursor, limit: 50 })}`),
+  addComment: (postId: string, body: string, parentId?: string) => call<CommentDTO>('POST', `/posts/${postId}/comments`, { body, parent_id: parentId }),
+  deleteComment: (id: string) => call<void>('DELETE', `/comments/${id}`),
+  reportComment: (id: string, reason: ReportReason) => call<{ id: string }>('POST', '/reports', { target_type: 'comment', target_id: id, reason }),
+  creator: (id: string) => call<CreatorDTO>('GET', `/creators/${id}`),
+  setFollow: (id: string, on: boolean) => call<CreatorDTO>(on ? 'PUT' : 'DELETE', `/creators/${id}/follow`),
+  commentReviews: () => call<{ data: CommentReviewDTO[] }>('GET', '/admin/comment-reviews'),
+  decideComment: (id: string, action: 'approve' | 'remove') => call<void>('POST', `/admin/comments/${id}/decision`, { action }),
   publish: (body: { asset_id: string; title: string; tags: string[]; show_prompt: boolean }) => call<PostDTO>('POST', '/posts', body),
   post: (id: string) => call<PostDTO>('GET', `/posts/${id}`),
   withdrawPost: (id: string) => call<void>('DELETE', `/posts/${id}`),

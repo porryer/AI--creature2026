@@ -6,6 +6,7 @@ import { Errors } from '../common/errors';
 import { pageParams, parse, UserId, type AuthedRequest } from '../common/http';
 import { CreditsModule } from '../credits/credits.module';
 import { CommunityModule } from '../community/community.module';
+import { SocialService } from '../community/social.service';
 import { Db, DB } from '../db/db';
 import { GatewayModule } from '../gateway/gateway.module';
 import { SafetyModule } from '../safety/safety.module';
@@ -49,6 +50,7 @@ export class AdminController {
     private readonly users: AdminUsersService,
     private readonly reconcile: ReconcileService,
     private readonly analyticsReport: AnalyticsService,
+    private readonly social: SocialService,
     @Inject(DB) private readonly db: Db,
   ) {}
 
@@ -124,6 +126,19 @@ export class AdminController {
   decide(@UserId() userId: string, @Param('id') id: string, @Body() body: unknown) {
     const b = parse(DecisionBody, body);
     return this.admin.decide(userId, id, b.action, b.note);
+  }
+
+  /** 评论复核：被举报自动隐藏的评论 */
+  @Get('comment-reviews')
+  commentQueue() {
+    return this.social.reviewQueue();
+  }
+
+  @Post('comments/:id/decision')
+  @HttpCode(204)
+  decideComment(@UserId() userId: string, @Param('id') id: string, @Body() body: unknown) {
+    const b = parse(DecisionBody, body);
+    return this.social.decide(userId, id, b.action, b.note);
   }
 }
 
