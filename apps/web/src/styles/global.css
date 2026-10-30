@@ -3522,3 +3522,12 @@ table.data th.num {
   white-space: nowrap;
   pointer-events: none;
 }
+
+/* ---------- 账号与隐私 ---------- */
+.danger-zone {
+  margin-top: 8px;
+  padding: 14px;
+  border: 1px solid var(--danger-soft);
+  border-radius: var(--r-md);
+  background: color-mix(in srgb, var(--danger-soft) 40%, transparent);
+}

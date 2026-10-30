@@ -173,6 +173,16 @@ export interface MeDTO {
   role: 'user' | 'admin';
 }
 
+/** 注销冷静期天数：期间重新登录即撤销注销 */
+export const DELETION_COOLING_DAYS = 15;
+
+export interface DeletionRequestDTO {
+  status: 'deleting';
+  requested_at: string;
+  /** 到期后匿名化账号、删除作品 */
+  delete_after: string;
+}
+
 export interface OrderDTO {
   id: string;
   order_no: string;
@@ -304,7 +314,8 @@ export interface AdminModelDTO {
   p95_sec_24h: number | null;
 }
 
-export type UserStatus = 'active' | 'frozen' | 'banned';
+/** deleting：注销冷静期（登录即撤销）；deleted：已注销并匿名化 */
+export type UserStatus = 'active' | 'frozen' | 'banned' | 'deleting' | 'deleted';
 
 export interface AdminUserDTO {
   id: string;

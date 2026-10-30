@@ -34,7 +34,9 @@ export class AuthGuard implements CanActivate {
     } catch {
       throw Errors.unauthenticated('登录已过期，请重新登录');
     }
-    if ((await this.statuses.get(userId)) !== 'active') throw Errors.suspended();
+    const status = await this.statuses.get(userId);
+    if (status === 'deleting') throw Errors.deleting();
+    if (status !== 'active') throw Errors.suspended();
     req.user = { id: userId };
     return true;
   }

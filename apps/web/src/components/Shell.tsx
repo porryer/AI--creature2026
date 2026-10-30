@@ -4,6 +4,7 @@ import { fmt, timeAgo } from '../lib/mock';
 import { navigate, type Route, type RouteName } from '../lib/router';
 import { useStore, type Theme } from '../lib/store';
 import { Coin } from './ui';
+import { AccountDrawer } from './Account';
 
 const NAV: { name: RouteName; label: string; icon: typeof Compass; mobile?: boolean }[] = [
   { name: 'explore', label: '发现', icon: Compass, mobile: true },
@@ -160,6 +161,7 @@ export function TopBar({ route }: { route: Route }) {
 function UserMenu() {
   const { state, mode, logout } = useStore();
   const [open, setOpen] = useState(false);
+  const [account, setAccount] = useState(false);
   const ref = useRef<HTMLDivElement>(null);
   const p = state.profile;
 
@@ -188,9 +190,14 @@ function UserMenu() {
               会员与积分
             </button>
             {mode === 'api' ? (
-              <button className="btn ghost sm danger" style={{ justifyContent: 'flex-start' }} onClick={() => void logout()}>
-                退出登录
-              </button>
+              <>
+                <button className="btn ghost sm" style={{ justifyContent: 'flex-start' }} onClick={() => (setOpen(false), setAccount(true))}>
+                  账号与隐私
+                </button>
+                <button className="btn ghost sm danger" style={{ justifyContent: 'flex-start' }} onClick={() => void logout()}>
+                  退出登录
+                </button>
+              </>
             ) : (
               <span className="subtle" style={{ fontSize: 12, padding: '4px 10px' }}>
                 离线演示模式：数据仅保存在本页面
@@ -199,6 +206,7 @@ function UserMenu() {
           </div>
         </div>
       )}
+      {account && <AccountDrawer onClose={() => setAccount(false)} />}
     </div>
   );
 }

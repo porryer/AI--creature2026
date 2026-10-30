@@ -17,6 +17,7 @@ export const Errors = {
   forbidden: (message = '无权访问该资源') => new AppError('PERMISSION_DENIED', 403, message),
   planRequired: (message: string, requiredPlan: string) => new AppError('PLAN_FEATURE_REQUIRED', 403, message, { required_plan: requiredPlan }),
   suspended: () => new AppError('ACCOUNT_SUSPENDED', 403, '账号已被限制使用，请联系客服'),
+  deleting: () => new AppError('ACCOUNT_DELETING', 403, '账号正在注销，重新登录即可撤销注销'),
   notFound: (what = '资源') => new AppError('NOT_FOUND', 404, `${what}不存在`),
   insufficientCredits: (required: number, available: number) =>
     new AppError('INSUFFICIENT_CREDITS', 402, `积分不足：本次需要 ${required} 积分，当前可用 ${available} 积分`, { required, available }),

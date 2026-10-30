@@ -18,7 +18,8 @@ export interface CleanupResult {
 /**
  * 存储清理（docs/04-database.md 第 6 节）：
  * - 过期未完成的上传会话：删除已写入的文件（本地写入或浏览器直传到存储桶的），会话标记为 expired；
- * - 已删除的作品：超过宽限期（ASSET_PURGE_DAYS）后删除交付文件与原始文件，保留元数据（内容编号、审核记录可追溯）。
+ * - 已删除的作品：超过宽限期（ASSET_PURGE_DAYS）后删除交付文件与原始文件，保留元数据（内容编号、审核记录可追溯）；
+ *   已注销账号的作品不等宽限期。
  *   仍被使用的文件不删：肖像授权材料（无论角色是否已删除）、未删除角色的参考图、未删除品牌套件的 Logo。
  * 用 FOR UPDATE SKIP LOCKED 认领，多个实例同时运行时互不重复；删除失败的批次回滚，下次重试。
  */
@@ -72,7 +73,8 @@ export class StorageCleanupService {
     return this.db.tx(async (q) => {
       const rows = await q.query<{ id: string; storage_key: string; raw_storage_key: string | null }>(
         `SELECT a.id, a.storage_key, a.raw_storage_key FROM assets a
-          WHERE a.deleted_at < $1 AND a.files_purged_at IS NULL
+          WHERE a.files_purged_at IS NULL
+            AND (a.deleted_at < $1 OR (a.deleted_at IS NOT NULL AND EXISTS (SELECT 1 FROM users u WHERE u.id = a.user_id AND u.status = 'deleted')))
             AND NOT EXISTS (SELECT 1 FROM characters c WHERE c.consent_asset_id = a.id)
             AND NOT EXISTS (SELECT 1 FROM character_refs r JOIN characters c ON c.id = r.character_id WHERE r.asset_id = a.id AND c.deleted_at IS NULL)
             AND NOT EXISTS (SELECT 1 FROM brand_kits b WHERE b.deleted_at IS NULL AND b.logos @> jsonb_build_array(jsonb_build_object('asset_id', a.id)))

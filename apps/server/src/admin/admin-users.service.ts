@@ -95,6 +95,7 @@ export class AdminUsersService {
       const [u] = await q.query<{ status: UserStatus; role: string }>('SELECT status, role FROM users WHERE id = $1 FOR UPDATE', [id]);
       if (!u) throw Errors.notFound('用户');
       if (u.role === 'admin' && status !== 'active') throw Errors.invalid('不能限制管理员账号，请先在 ADMIN_PHONES 中移除');
+      if (u.status === 'deleting' || u.status === 'deleted') throw Errors.invalid('该用户已申请注销，不能修改状态');
       if (u.status === status) return;
       await q.query('UPDATE users SET status = $2, updated_at = now() WHERE id = $1', [id, status]);
       if (status !== 'active') await q.query('UPDATE auth_sessions SET revoked_at = now() WHERE user_id = $1 AND revoked_at IS NULL', [id]);

@@ -434,6 +434,8 @@ interface Ctx {
   purchase: (item: PurchaseItem) => Promise<boolean>;
   login: (phone: string, code: string) => Promise<void>;
   logout: () => Promise<void>;
+  /** 申请注销（短信验证码确认）；成功后退出登录 */
+  deleteAccount: (code: string) => Promise<void>;
   toast: (text: string, kind?: Toast['kind']) => void;
   dismiss: (id: string) => void;
   patchAsset: (id: string, patch: Partial<Asset>) => void;
@@ -549,10 +551,10 @@ export function StoreProvider({ children }: { children: ReactNode }) {
   // 账号被后台限制：退回登录页
   useEffect(() => {
     if (BACKEND !== 'api') return;
-    return onAccountSuspended(() => {
+    return onAccountSuspended((code) => {
       if (ref.current.auth !== 'authed') return;
       dispatch({ type: 'reset' });
-      toast('账号已被限制使用，如有疑问请联系客服', 'err');
+      toast(code === 'ACCOUNT_DELETING' ? '账号正在注销，重新登录即可撤销注销' : '账号已被限制使用，如有疑问请联系客服', 'err');
     });
   }, [toast]);
 
@@ -792,8 +794,14 @@ export function StoreProvider({ children }: { children: ReactNode }) {
         }
       },
       async login(phone, code) {
-        await api.login(phone, code);
+        const r = await api.login(phone, code);
         await hydrate();
+        if (r.deletion_canceled) toast('已撤销注销申请，欢迎回来');
+      },
+      async deleteAccount(code) {
+        const r = await api.deleteAccount(code);
+        dispatch({ type: 'reset' });
+        toast(`已申请注销。账号将于 ${new Date(r.delete_after).toLocaleDateString('zh-CN')} 注销，在此之前重新登录即可撤销`);
       },
       async logout() {
         await api.logout();

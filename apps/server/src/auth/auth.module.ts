@@ -36,7 +36,7 @@ export class AuthController {
     const { phone, code } = parse(LoginSchema, body);
     const r = await this.auth.login(phone, code, req.header('user-agent'));
     this.setCookie(res, r.refreshToken);
-    return { access_token: r.accessToken, expires_in: r.expiresIn, user_id: r.userId, is_new: r.isNew };
+    return { access_token: r.accessToken, expires_in: r.expiresIn, user_id: r.userId, is_new: r.isNew, deletion_canceled: r.deletionCanceled };
   }
 
   @Post('refresh')
@@ -95,6 +95,6 @@ export class AuthController {
       },
     },
   ],
-  exports: [AuthGuard, UserStatusService, JwtModule],
+  exports: [AuthGuard, AuthService, UserStatusService, JwtModule],
 })
 export class AuthModule {}

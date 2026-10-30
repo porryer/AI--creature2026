@@ -6,7 +6,7 @@ import { api } from '../lib/api';
 import { fmt, timeAgo } from '../lib/mock';
 import { errorText, uid, useStore } from '../lib/store';
 
-const STATUS_LABEL: Record<UserStatus, [string, string]> = { active: ['正常', 'ok'], frozen: ['已冻结', 'text'], banned: ['已封禁', 'danger'] };
+const STATUS_LABEL: Record<UserStatus, [string, string]> = { active: ['正常', 'ok'], frozen: ['已冻结', 'text'], banned: ['已封禁', 'danger'], deleting: ['注销中', 'text'], deleted: ['已注销', 'text'] };
 const ACTION_LABEL: Record<string, string> = { 'user.freeze': '冻结', 'user.ban': '封禁', 'user.restore': '解除限制', 'user.credits_adjust': '调整积分' };
 const MODALITY_LABEL = { image: '图像', video: '视频', text: '写作', audio: '音频' } as const;
 

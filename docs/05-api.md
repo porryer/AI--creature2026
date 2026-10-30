@@ -38,6 +38,8 @@
 | 401 | `UNAUTHENTICATED` | 未登录或令牌过期 |
 | 403 | `PERMISSION_DENIED` | 无权访问该资源 |
 | 403 | `ACCOUNT_SUSPENDED` | 账号已被后台冻结或封禁，客户端应退出登录 |
+| 403 | `ACCOUNT_DELETING` | 账号在注销冷静期内（重新登录即撤销），客户端应退出登录 |
+| 409 | `ACCOUNT_BUSY` | 有正在生成的任务，暂不能注销 |
 | 403 | `PHONE_BINDING_REQUIRED` | 未绑定手机号，不能使用生成功能 |
 | 402 | `INSUFFICIENT_CREDITS` | 积分不足 |
 | 403 | `PLAN_FEATURE_REQUIRED` | 当前套餐不支持该功能（已实现：角色库与品牌套件），`details.required_plan` |
@@ -48,14 +50,14 @@
 | 429 | `RATE_LIMITED` | 请求过于频繁（验证码、上传、发布、举报的每日上限；生成任务每分钟提交次数与进行中任务数），附 `Retry-After` |
 | 503 | `MODEL_UNAVAILABLE` | 所选模型及备选模型均不可用 |
 
-### 1.3 实现状态（Sprint 1–10）
+### 1.3 实现状态（Sprint 1–11）
 
 已实现（`apps/server`，带集成测试）：
 
 | 分组 | 接口 |
 |---|---|
 | 认证 | `POST /auth/sms/send`、`POST /auth/sms/login`、`POST /auth/refresh`、`POST /auth/logout` |
-| 用户 | `GET /me`（含 `role`）、`PATCH /me` |
+| 用户 | `GET /me`（含 `role`）、`PATCH /me`、`GET /me/export`、`POST /me/deletion/code`、`DELETE /me`，见 3.13 |
 | 模型 | `GET /models`、`POST /models/route` |
 | 生成 | `POST /generations`（含图像编辑，见 3.1）、`GET /generations`、`GET /generations/{id}`、`POST /generations/{id}/cancel`（排队中取消；写作生成中为停止，见 3.3） |
 | 推送 | `GET /events`（SSE，替代 3.3 节的 WebSocket，见下；写作任务流式输出 `task.delta`） |
@@ -88,7 +90,9 @@
 | POST | `/auth/logout` | 注销当前会话 |
 | GET | `/me` | 当前用户信息、套餐、积分概要 |
 | PATCH | `/me` | 修改昵称、头像、偏好 |
-| DELETE | `/me` | 申请注销账号 |
+| DELETE | `/me` | 申请注销账号（短信验证，15 天冷静期） |
+| POST | `/me/deletion/code` | 向绑定手机号发送注销确认验证码 |
+| GET | `/me/export` | 导出个人信息副本（JSON 附件） |
 
 ### 2.2 模型与价目
 
@@ -551,6 +555,16 @@ data: {"session_status":"awaiting_confirm"}
 | `events` | 各事件次数（按来源） |
 | `templates` | 热门模板的使用次数与人数 |
 | `paywall` | 看到付费墙的用户数、其中付费的用户数、订单数与金额 |
+
+### 3.13 个人信息权利：导出与注销
+
+**导出** `GET /v1/me/export`：返回 JSON 附件（`creature-personal-data-YYYY-MM-DD.json`），包含 `account`（含完整手机号）、`credits`（余额与全部流水）、`orders`、`generations`（提示词、参数、状态、积分）、`assets`（未删除的作品，`url` 2 小时内有效）、`posts`、`characters`、`brand_kits`、`projects`、`template_ratings`。每人每天 5 次（`429 RATE_LIMITED`），每次写审计日志。
+
+**注销**：
+1. `POST /v1/me/deletion/code` 向账号绑定的手机号发送验证码（与登录验证码共用频率限制）。
+2. `DELETE /v1/me { "code": "123456" }` → `200 { status: "deleting", requested_at, delete_after }`。有排队或生成中的任务时 `409 ACCOUNT_BUSY`。成功后所有会话立即吊销，原访问令牌在所有实例上返回 `403 ACCOUNT_DELETING`。
+3. 冷静期（15 天）内用该手机号登录即撤销注销，登录响应 `deletion_canceled: true`。
+4. 冷静期满后由维护任务匿名化（多实例 `SKIP LOCKED` 认领）：昵称改为"已注销用户"、清除手机号（同一手机号可重新注册为新账号）、套餐重置；作品标记删除并清除标题与正文（文件由存储清理立即删除，不等宽限期；内容编号保留以便追溯）；广场发布撤回、点赞删除并重算计数；角色、品牌套件、项目删除并清空内容，画布文档清空；埋点事件解除关联。生成记录（合规留存）、订单与积分流水保留但不再能关联到个人；肖像授权材料按合规要求保留。已注销或注销中的账号不能在后台修改状态。
 
 ## 4. 开放 API（P2）
 

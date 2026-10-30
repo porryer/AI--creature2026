@@ -8,6 +8,7 @@ import { Db, DB, isUniqueViolation } from '../db/db';
 import { CreditsService } from '../credits/credits.service';
 import { encryptPhone, hmac, PHONE_RE, randomCode, randomToken, safeEqual, sha256 } from './crypto';
 import { SMS_PROVIDER, SmsProvider } from './sms.provider';
+import { UserStatusService } from './user-status.service';
 
 const CODE_TTL_SEC = 300;
 const CODE_MAX_ATTEMPTS = 5;
@@ -37,6 +38,7 @@ export class AuthService {
     @Inject(SMS_PROVIDER) private readonly sms: SmsProvider,
     private readonly jwt: JwtService,
     private readonly credits: CreditsService,
+    private readonly statuses: UserStatusService,
   ) {}
 
   private phoneHash(phone: string) {
@@ -72,8 +74,19 @@ export class AuthService {
     return echo && this.config.smsMode === 'dev' ? { expires_in: CODE_TTL_SEC, dev_code: code } : { expires_in: CODE_TTL_SEC };
   }
 
-  /** 验证码登录；首次登录自动注册并发放新手积分 */
-  async login(phone: string, code: string, userAgent?: string): Promise<TokenPair & { userId: string; isNew: boolean }> {
+  /** 验证码登录；首次登录自动注册并发放新手积分；注销冷静期内登录即撤销注销 */
+  async login(phone: string, code: string, userAgent?: string): Promise<TokenPair & { userId: string; isNew: boolean; deletionCanceled: boolean }> {
+    const ph = await this.verifyCode(phone, code);
+    const { userId, isNew, deletionCanceled } = await this.findOrCreateUser(phone, ph);
+    if (this.config.adminPhones.includes(phone)) await this.db.query(`UPDATE users SET role = 'admin' WHERE id = $1 AND role <> 'admin'`, [userId]);
+    // PRD：每日首次登录赠送积分（同一天内幂等）
+    await this.credits.ensureDailyGrant(userId);
+    const tokens = await this.issue(userId, newId('fam'), userAgent);
+    return { ...tokens, userId, isNew, deletionCanceled };
+  }
+
+  /** 校验并消耗验证码（登录与注销确认共用），返回手机号的 HMAC */
+  async verifyCode(phone: string, code: string): Promise<string> {
     if (!PHONE_RE.test(phone) || !/^\d{6}$/.test(code)) throw Errors.invalid('手机号或验证码格式不正确');
     const ph = this.phoneHash(phone);
     const [row] = await this.db.query<{ id: string; code_hash: string; attempts: number }>(
@@ -87,20 +100,24 @@ export class AuthService {
     }
     const consumed = await this.db.query('UPDATE sms_codes SET consumed_at = now() WHERE id = $1 AND consumed_at IS NULL RETURNING id', [row.id]);
     if (!consumed.length) throw new AppError('CODE_INVALID', 400, '验证码已使用，请重新获取');
-
-    const { userId, isNew } = await this.findOrCreateUser(phone, ph);
-    if (this.config.adminPhones.includes(phone)) await this.db.query(`UPDATE users SET role = 'admin' WHERE id = $1 AND role <> 'admin'`, [userId]);
-    // PRD：每日首次登录赠送积分（同一天内幂等）
-    await this.credits.ensureDailyGrant(userId);
-    const tokens = await this.issue(userId, newId('fam'), userAgent);
-    return { ...tokens, userId, isNew };
+    return ph;
   }
 
-  private async findOrCreateUser(phone: string, ph: string): Promise<{ userId: string; isNew: boolean }> {
+  private async findOrCreateUser(phone: string, ph: string): Promise<{ userId: string; isNew: boolean; deletionCanceled: boolean }> {
     const existing = await this.db.query<{ id: string; status: string }>('SELECT id, status FROM users WHERE phone_hash = $1', [ph]);
     if (existing[0]) {
-      if (existing[0].status !== 'active') throw Errors.suspended();
-      return { userId: existing[0].id, isNew: false };
+      const { id, status } = existing[0];
+      if (status === 'deleting') {
+        const canceled = await this.db.tx(async (q) => {
+          const r = await q.query(`UPDATE users SET status = 'active', deletion_requested_at = NULL, updated_at = now() WHERE id = $1 AND status = 'deleting' RETURNING id`, [id]);
+          if (r.length) await q.query(`INSERT INTO audit_logs (id, actor_id, action, target_type, target_id) VALUES ($1, $2, 'user.deletion_canceled', 'user', $2)`, [newId('aud'), id]);
+          return r.length > 0;
+        });
+        this.statuses.changed(id);
+        return { userId: id, isNew: false, deletionCanceled: canceled };
+      }
+      if (status !== 'active') throw Errors.suspended();
+      return { userId: id, isNew: false, deletionCanceled: false };
     }
     const userId = newId('usr');
     try {
@@ -120,7 +137,7 @@ export class AuthService {
       if (isUniqueViolation(e)) return this.findOrCreateUser(phone, ph);
       throw e;
     }
-    return { userId, isNew: true };
+    return { userId, isNew: true, deletionCanceled: false };
   }
 
   /** 刷新令牌轮换；检测到旧令牌被重复使用时吊销整个令牌族 */

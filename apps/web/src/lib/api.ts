@@ -1,5 +1,6 @@
 import type {
   AdminAnalyticsDTO,
+  DeletionRequestDTO,
   BrandKitDTO,
   ClientEvent,
   CharacterDTO,
@@ -55,10 +56,10 @@ export class ApiError extends Error {
 let accessToken: string | null = null;
 let refreshing: Promise<boolean> | null = null;
 const tokenListeners = new Set<(token: string | null) => void>();
-const suspendedListeners = new Set<() => void>();
+const suspendedListeners = new Set<(code: 'ACCOUNT_SUSPENDED' | 'ACCOUNT_DELETING') => void>();
 
-/** 账号被后台冻结或封禁时触发（任意接口返回 ACCOUNT_SUSPENDED） */
-export const onAccountSuspended = (fn: () => void) => {
+/** 账号被后台冻结或封禁（ACCOUNT_SUSPENDED），或已申请注销（ACCOUNT_DELETING）时触发 */
+export const onAccountSuspended = (fn: (code: 'ACCOUNT_SUSPENDED' | 'ACCOUNT_DELETING') => void) => {
   suspendedListeners.add(fn);
   return () => {
     suspendedListeners.delete(fn);
@@ -86,9 +87,10 @@ async function raw<T>(method: string, path: string, body?: unknown, headers: Rec
   const data = await res.json().catch(() => null);
   if (!res.ok) {
     const err = (data as ApiErrorBody | null)?.error;
-    if (err?.code === 'ACCOUNT_SUSPENDED') {
+    if (err?.code === 'ACCOUNT_SUSPENDED' || err?.code === 'ACCOUNT_DELETING') {
+      const code = err.code;
       setToken(null);
-      suspendedListeners.forEach((fn) => fn());
+      suspendedListeners.forEach((fn) => fn(code));
     }
     throw new ApiError(res.status, err?.code ?? `HTTP_${res.status}`, err?.message ?? '网络异常，请稍后重试', err?.details);
   }
@@ -158,7 +160,7 @@ type Quota = { used: number; limit: number };
 export const api = {
   sendCode: (phone: string) => raw<{ expires_in: number; dev_code?: string }>('POST', '/auth/sms/send', { phone }),
   async login(phone: string, code: string) {
-    const r = await raw<{ access_token: string; user_id: string; is_new: boolean }>('POST', '/auth/sms/login', { phone, code });
+    const r = await raw<{ access_token: string; user_id: string; is_new: boolean; deletion_canceled: boolean }>('POST', '/auth/sms/login', { phone, code });
     setToken(r.access_token);
     return r;
   },
@@ -167,6 +169,14 @@ export const api = {
     setToken(null);
   },
   me: () => call<MeDTO>('GET', '/me'),
+  /** 个人信息副本（JSON） */
+  exportMe: () => call<Record<string, unknown>>('GET', '/me/export'),
+  deletionCode: () => call<{ expires_in: number; dev_code?: string }>('POST', '/me/deletion/code', {}),
+  async deleteAccount(code: string) {
+    const r = await call<DeletionRequestDTO>('DELETE', '/me', { code });
+    setToken(null);
+    return r;
+  },
   balance: () => call<BalanceDTO>('GET', '/credits/balance'),
   ledger: (cursor?: string) => call<Page<LedgerEntryDTO>>('GET', `/credits/ledger${qs({ limit: 30, cursor })}`),
   createGeneration: (body: CreateGenerationBody, idempotencyKey: string) => call<TaskDTO>('POST', '/generations', body, { 'idempotency-key': idempotencyKey }),
