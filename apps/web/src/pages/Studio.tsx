@@ -35,6 +35,7 @@ import { BRAND_KIT, CHARACTERS, VOICES, WRITING_TEMPLATES, timeAgo } from '../li
 import { AI_TEXT_LABEL, editLabel, estimateCredits, modelByCode, modelsFor, QUEUE_POSITION_CAP, stripAiTextLabel, type GenerationParams, type TransformKind } from '@creature/shared';
 import { track } from '../lib/analytics';
 import { BACKEND } from '../lib/api';
+import { clearStream, useStreamText } from '../lib/streams';
 import { contextInput, NO_CONTEXT, type ContextChoice } from '../lib/library';
 import { navigate } from '../lib/router';
 import { uid, useStore, type Handoff } from '../lib/store';
@@ -808,7 +809,7 @@ const parseBoard = (t: string) => stripLabel(t).split('\n').filter((l) => l.incl
 type Pending = { id: string; kind: 'draft' | 'transform'; range?: [number, number]; label?: string };
 
 function WriteStudio() {
-  const { state, submit, toast, setHandoff } = useStore();
+  const { state, submit, toast, setHandoff, cancelTask } = useStore();
   const [tpl, setTpl] = useState('xhs');
   const [topic, setTopic] = useState('');
   const [tone, setTone] = useState('亲切');
@@ -828,6 +829,9 @@ function WriteStudio() {
   const target = { 短: 300, 中: 800, 长: 2000 }[length] ?? 800;
   const credits = estimateCredits(model, { chars: target });
   const busy = !!pending || revealing;
+  // 接入后端时正文随服务端推送逐段出现；离线演示在结果返回后逐段显示
+  const streamed = useStreamText(pending?.kind === 'draft' ? pending.id : undefined);
+  const streaming = BACKEND === 'api' && pending?.kind === 'draft';
 
   useHandoff('text', (p) => setTopic(p));
   useEffect(() => () => window.clearInterval(timer.current), []);
@@ -838,6 +842,7 @@ function WriteStudio() {
     const task = state.tasks.find((t) => t.id === pending.id);
     if (!task || task.status === 'queued' || task.status === 'running') return;
     setPending(null);
+    clearStream(task.id);
     if (task.status !== 'succeeded') return;
     const out = stripLabel(task.outputs[0]?.text ?? '');
     if (pending.kind === 'transform' && pending.range) {
@@ -848,6 +853,11 @@ function WriteStudio() {
     }
     if (tpl === 'storyboard') {
       setBoard(parseBoard(out));
+      return;
+    }
+    if (BACKEND === 'api') {
+      setText(out);
+      if (task.stopped) toast(`已停止，保留已生成的 ${out.length} 字 · ${task.credits} 积分`);
       return;
     }
     // 逐段显示，模拟流式输出
@@ -961,6 +971,11 @@ function WriteStudio() {
                 <Square size={13} /> 停止
               </button>
             )}
+            {streaming && (
+              <button className="btn ghost sm" onClick={() => pending && void cancelTask(pending.id)}>
+                <Square size={13} /> 停止
+              </button>
+            )}
           </div>
           {board ? (
             <>
@@ -1009,7 +1024,9 @@ function WriteStudio() {
                 id="writer-doc"
                 ref={area}
                 className="writer-doc"
-                value={text}
+                value={streaming ? streamed : text}
+                readOnly={streaming}
+                aria-busy={streaming}
                 onChange={(e) => setText(e.target.value)}
                 placeholder={pending ? '正在生成…' : '选择左侧模板，填写主题后点击“开始写作”。生成的文字可直接编辑，选中一段可以改写、扩写或缩写。'}
                 rows={18}
@@ -1017,7 +1034,7 @@ function WriteStudio() {
             </>
           )}
           <div className="writer-foot">
-            <span className="mono">{board ? `${board.length} 个镜头` : `${text.length} 字`}</span>
+            <span className="mono">{board ? `${board.length} 个镜头` : `${(streaming ? streamed : text).length} 字`}</span>
             <span>导出或复制时自动附带 AI 生成标识</span>
           </div>
         </div>

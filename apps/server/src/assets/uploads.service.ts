@@ -22,7 +22,7 @@ interface UploadRow {
   filename: string;
   mime_type: RasterMime;
   max_bytes: number;
-  status: 'pending' | 'uploaded' | 'completed' | 'rejected';
+  status: 'pending' | 'uploaded' | 'completed' | 'rejected' | 'expired';
   storage_key: string;
   asset_id: string | null;
   expires_at: Date;
@@ -94,6 +94,7 @@ export class UploadsService {
     if (!u) throw Errors.notFound('上传');
     if (u.status === 'completed' && u.asset_id) return this.assets.get(userId, u.asset_id);
     if (u.status === 'rejected') throw Errors.contentRejected('upload');
+    if (u.status === 'expired') throw Errors.conflict('UPLOAD_CLOSED', '上传会话已过期，请重新上传');
     if (u.status === 'pending' && this.storage.direct) await this.verifyDirect(u);
     else if (u.status !== 'uploaded') throw Errors.conflict('UPLOAD_INCOMPLETE', '文件尚未上传完成');
 

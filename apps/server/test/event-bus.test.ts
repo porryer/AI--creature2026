@@ -73,10 +73,15 @@ describe('事件总线（跨实例广播规则）', () => {
     a.broadcastTask('u2', 'task.succeeded', { id: 't2', status: 'succeeded' }); // 没有 u2 的连接
     a.broadcastTask('u1', 'task.failed', { id: 't3', status: 'failed' }); // 只有引用：B 读取
     a.control('ping', { n: 1 });
+    a.emit('u1', { type: 'task.delta', task_id: 't4', offset: 0, text: '秋天的第一杯' });
     await flush();
 
-    expect(onA.map((e) => e.type)).toEqual(['task.succeeded']); // 只有本地那一次
-    expect(onB.map((e) => (e.type === 'sync' || e.type === 'credits.changed' ? e.type : `${e.type}:${e.task.id}`))).toEqual(['task.succeeded:t1', 'task.failed:t3']);
+    expect(onA.map((e) => e.type)).toEqual(['task.succeeded', 'task.delta']); // 只有本地那一次
+    expect(onB.map((e) => (e.type === 'sync' || e.type === 'credits.changed' ? e.type : e.type === 'task.delta' ? `${e.type}:${e.task_id}:${e.offset}:${e.text}` : `${e.type}:${e.task.id}`)).sort()).toEqual([
+      'task.delta:t4:0:秋天的第一杯', // 增量随通知发送，不需要读取
+      'task.failed:t3',
+      'task.succeeded:t1',
+    ]);
     expect(loader.mock.calls).toEqual([['u1', 't3']]);
     expect(control).toHaveBeenCalledWith({ n: 1 });
     subA.unsubscribe();

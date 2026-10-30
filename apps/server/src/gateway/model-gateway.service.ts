@@ -27,6 +27,17 @@ export interface GatewayResult {
   outputs: RawOutput[];
   vendorCostFen: number;
   attempts: { model: string; code: string }[];
+  stopped: boolean;
+}
+
+/** 流式与中止选项 */
+export interface StreamOptions {
+  /** 增量文本；candidateIndex 变化表示切换了备选模型，之前的输出作废 */
+  onDelta?: (text: string, candidateIndex: number) => void;
+  /** 用户停止：返回已生成的部分，不再切换备选模型 */
+  stop?: AbortSignal;
+  /** 由调用方中止（如流式审核拦截）：立即结束，抛出 ABORTED，不切换备选模型 */
+  abort?: AbortSignal;
 }
 
 export interface ModelHealth {
@@ -84,7 +95,12 @@ export class ModelGateway {
     return pool.length ? routeModel(modality, prompt, strategy, pool) : null;
   }
 
-  async generate(primary: ModelInfo, req: Omit<AdapterRequest, 'model' | 'candidateIndex' | 'signal'>, onProgress: (pct: number) => void): Promise<GatewayResult> {
+  async generate(
+    primary: ModelInfo,
+    req: Omit<AdapterRequest, 'model' | 'candidateIndex' | 'signal' | 'onDelta' | 'stop'>,
+    onProgress: (pct: number) => void,
+    stream: StreamOptions = {},
+  ): Promise<GatewayResult> {
     // 配乐与配音不能互为备选
     // 配乐与图像编辑没有可替代的模型，不切换备选
     const pool = primary.code === 'creature-music' || primary.editOnly ? [] : this.available(primary.modality);
@@ -95,22 +111,31 @@ export class ModelGateway {
     for (const [i, model] of candidates.entries()) {
       const adapter = this.adapterFor(model);
       if (!adapter) continue;
+      if (stream.abort?.aborted) break;
       const ctrl = new AbortController();
       const timer = setTimeout(() => ctrl.abort(), TIMEOUT_MS[model.modality]);
+      const onAbort = () => ctrl.abort();
+      stream.abort?.addEventListener('abort', onAbort);
+      const onDelta = stream.onDelta;
       try {
-        const r = await adapter.generate({ ...req, model, candidateIndex: i, signal: ctrl.signal }, onProgress);
+        const r = await adapter.generate({ ...req, model, candidateIndex: i, signal: ctrl.signal, stop: stream.stop, onDelta: onDelta && ((t) => onDelta(t, i)) }, onProgress);
+        if (stream.abort?.aborted) break;
         this.record(model.code, true);
-        return { model, outputs: r.outputs, vendorCostFen: r.vendorCostFen, attempts };
+        return { model, outputs: r.outputs, vendorCostFen: r.vendorCostFen, attempts, stopped: !!r.stopped };
       } catch (e) {
+        if (stream.abort?.aborted) break;
         const err = e instanceof VendorError ? e : new VendorError('VENDOR_ERROR', e instanceof Error ? e.message : String(e), true);
         this.record(model.code, false);
         attempts.push({ model: model.code, code: err.code });
         this.logger.warn(`[${req.taskId}] ${model.code} 失败（${err.code}）：${err.message}`);
-        if (!err.retryable) throw new GatewayError(err.code, err.message, attempts);
+        // 用户已停止：不再切换备选模型
+        if (!err.retryable || stream.stop?.aborted) throw new GatewayError(err.code, err.message, attempts);
       } finally {
         clearTimeout(timer);
+        stream.abort?.removeEventListener('abort', onAbort);
       }
     }
+    if (stream.abort?.aborted) throw new GatewayError('ABORTED', '生成已中止', attempts);
     const tried = attempts.map((a) => findModel(a.model)?.name ?? a.model).join('、');
     throw new GatewayError('ALL_MODELS_FAILED', `已依次尝试 ${tried}，均未成功`, attempts);
   }

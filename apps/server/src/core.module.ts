@@ -4,6 +4,7 @@ import { AppConfig, CONFIG } from './config';
 import { Db, DB, migrate, openDb } from './db/db';
 import { EventBus } from './events/event-bus';
 import { MetricsService } from './observability/metrics.service';
+import { StorageCleanupService } from './storage/cleanup.service';
 import { StorageService } from './storage/storage.service';
 
 @Injectable()
@@ -34,10 +35,11 @@ export class CoreModule {
         DbLifecycle,
         EventBus,
         StorageService,
+        StorageCleanupService,
         MetricsService,
         AnalyticsService,
       ],
-      exports: [CONFIG, DB, EventBus, StorageService, MetricsService, AnalyticsService],
+      exports: [CONFIG, DB, EventBus, StorageService, StorageCleanupService, MetricsService, AnalyticsService],
     };
   }
 }

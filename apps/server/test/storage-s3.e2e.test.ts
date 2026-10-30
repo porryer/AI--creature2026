@@ -1,4 +1,5 @@
 import { randomBytes } from 'node:crypto';
+import { StorageCleanupService } from '../src/storage/cleanup.service';
 import { S3Client } from '../src/storage/s3';
 import { StorageService } from '../src/storage/storage.service';
 import { drain, login, makeApp, submit, type TestApp } from './helpers';
@@ -91,6 +92,27 @@ s3('对象存储驱动（S3 兼容）', () => {
     expect((await t.http().post(`/v1/assets/uploads/${tk2.upload_id}/complete`).set(auth(u.token)).expect(400)).body.error.message).toContain('格式不符');
     expect(await storage.tryRead(row.storage_key)).toBeNull();
     expect((await t.http().post(`/v1/assets/uploads/${tk2.upload_id}/complete`).set(auth(u.token)).expect(409)).body.error.code).toBe('UPLOAD_INCOMPLETE');
+  });
+
+  it('清理：直传到存储桶但未完成的上传在过期后删除；已删除作品的文件在宽限期后删除', async () => {
+    const u = await login(t);
+    const data = png(32, 32);
+    const tk = await ticket(u.token, data);
+    expect((await put(tk.upload_url, data)).status).toBe(200);
+    const [{ storage_key: key }] = await t.db.query<{ storage_key: string }>('SELECT storage_key FROM uploads WHERE id = $1', [tk.upload_id]);
+    expect(await storage.tryRead(key)).not.toBeNull();
+    await t.db.query(`UPDATE uploads SET expires_at = now() - interval '2 hours' WHERE id = $1`, [tk.upload_id]);
+
+    const task = await submit(t, u.token, { modality: 'image', prompt: '清理演示', params: { count: 1 } }).expect(202);
+    await drain(t);
+    const asset = (await t.http().get(`/v1/generations/${task.body.id}`).set(auth(u.token))).body.outputs[0].asset_id;
+    const [keys] = await t.db.query<{ storage_key: string; raw_storage_key: string }>('SELECT storage_key, raw_storage_key FROM assets WHERE id = $1', [asset]);
+    await t.http().delete(`/v1/assets/${asset}`).set(auth(u.token)).expect(204);
+
+    const r = await t.app.get(StorageCleanupService).run(new Date(Date.now() + 31 * 86_400_000));
+    expect(r.uploads).toBeGreaterThanOrEqual(1);
+    expect(r.assets).toBeGreaterThanOrEqual(1);
+    for (const k of [key, keys.storage_key, keys.raw_storage_key]) expect(await storage.tryRead(k)).toBeNull();
   });
 
   it('生成：原始文件与带标识的交付文件写入存储桶；下载地址以附件返回，文件名参与签名', async () => {

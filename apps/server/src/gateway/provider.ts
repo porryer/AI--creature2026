@@ -16,6 +16,10 @@ export interface AdapterRequest {
   /** 在候选模型列表中的序号，0 为主模型 */
   candidateIndex: number;
   signal: AbortSignal;
+  /** 流式输出（写作）：支持流式的适配器每产出一段文本调用一次 */
+  onDelta?: (text: string) => void;
+  /** 用户停止生成：流式适配器应尽快结束，返回已生成的部分（stopped 为 true） */
+  stop?: AbortSignal;
 }
 
 export interface ReferenceInput {
@@ -33,6 +37,8 @@ export interface AdapterResult {
   outputs: RawOutput[];
   /** 平台成本（分），用于毛利分析 */
   vendorCostFen: number;
+  /** 因用户停止而提前结束，outputs 为已生成的部分 */
+  stopped?: boolean;
 }
 
 /** 供应商适配器：每家供应商一个实现，网关只依赖这个接口 */

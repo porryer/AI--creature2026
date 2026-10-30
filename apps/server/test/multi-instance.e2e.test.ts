@@ -53,6 +53,35 @@ pg('多实例：两个后端实例共用同一个数据库', () => {
     }
   });
 
+  it('写作流式输出：增量经通知送达 B 上的连接；在 B 停止，A 上的 Worker 立即结束并保留已生成的部分', async () => {
+    const latency = { image: 0, video: 0, audio: 0, text: 1500 };
+    const c = await makeApp({ mockLatencyMs: latency });
+    const d = await makeApp({ mockLatencyMs: latency, databaseUrl: c.config.databaseUrl, eventsChannel: c.config.eventsChannel, storageDir: c.config.storageDir });
+    try {
+      const u = await login(c);
+      const deltas: Extract<ServerEvent, { type: 'task.delta' }>[] = [];
+      const sub = d.app.get(EventBus).stream(u.userId).subscribe((e) => e.type === 'task.delta' && deltas.push(e));
+      const task = await submit(c, u.token, { modality: 'text', prompt: '秋季新品', params: { template: 'article' } }).expect(202);
+      const started = Date.now();
+      const run = c.worker.runOnce();
+      expect(await until(() => deltas.length >= 2)).toBe(true);
+      await d.http().post(`/v1/generations/${task.body.id}/cancel`).set(auth(u.token)).expect(200);
+      await run;
+      expect(Date.now() - started).toBeLessThan(1500);
+      const done = (await d.http().get(`/v1/generations/${task.body.id}`).set(auth(u.token)).expect(200)).body;
+      expect(done).toMatchObject({ status: 'succeeded', stopped: true });
+      await until(() => false, 200); // 等待在途的通知
+      sub.unsubscribe();
+      // 通知可能乱序到达，按 offset 排序后拼接
+      const text = [...deltas].sort((x, y) => x.offset - y.offset).reduce((cur, x) => cur.slice(0, x.offset) + x.text, '');
+      expect(text.length).toBeGreaterThan(0);
+      expect(done.outputs[0].text.startsWith(text)).toBe(true);
+    } finally {
+      await d.close();
+      await c.close();
+    }
+  });
+
   it('任务内容随通知发送，B 无需读取；超过通知上限的长提示词改为传引用，由 B 读取', async () => {
     const u = await login(a);
     const busB = b.app.get(EventBus);

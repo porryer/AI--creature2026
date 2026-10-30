@@ -24,6 +24,7 @@ import {
 } from '@creature/shared';
 import { api, ApiError, BACKEND, onAccountSuspended, refresh, subscribeEvents } from './api';
 import { INITIAL_ASSETS, INITIAL_LEDGER, NOW } from './mock';
+import { applyDelta } from './streams';
 import type { Asset, Folder, LedgerEntry, Modality, ModelInfo, Notice, Output, Task, Toast } from './types';
 
 // 全局状态：积分账户、生成任务、资产、积分流水、通知。
@@ -131,6 +132,7 @@ export function taskFromDTO(d: TaskDTO): Task {
     createdAt: Date.parse(d.created_at),
     outputs: d.outputs.map((o, i) => outputFromDTO(o, i, d.prompt, d.params.ratio)),
     error: d.error?.message,
+    stopped: d.stopped,
     routingReason: d.routing_reason,
     source: d.source,
     sourceAssetId: d.references?.find((r) => r.role === 'source')?.asset_id,
@@ -481,6 +483,11 @@ export function StoreProvider({ children }: { children: ReactNode }) {
   const onServerEvent = useCallback(
     (e: ServerEvent) => {
       if (e.type === 'sync') return;
+      if (e.type === 'task.delta') {
+        const known = ref.current.tasks.find((t) => t.id === e.task_id);
+        if (!known || !DONE_STATUSES.includes(known.status)) applyDelta(e);
+        return;
+      }
       if (e.type === 'credits.changed') {
         dispatch({ type: 'set_credits', available: e.credits.available, frozen: e.credits.frozen, expiringSoon: e.credits.expiring_soon });
         window.clearTimeout(ledgerTimer.current);
@@ -495,7 +502,8 @@ export function StoreProvider({ children }: { children: ReactNode }) {
       const quiet = task.source === 'canvas' || task.source === 'agent';
       if (e.type === 'task.succeeded') {
         dispatch({ type: 'add_assets', assets: e.task.outputs.map((o, i) => ({ ...assetFromDTO({ ...o, id: o.asset_id, title: `${task.prompt.slice(0, 16)}${e.task.outputs.length > 1 ? ` · ${i + 1}` : ''}`, prompt: task.prompt, favorite: false, model: task.model.name, task_id: task.id, source: 'generated', created_at: new Date().toISOString() }), ratio: String(task.params.ratio ?? '1:1') })) });
-        if (!quiet) toast(`${KIND_LABEL[task.modality]}生成完成 · 消耗 ${task.credits} 积分`);
+        // 中途停止的写作由写作台提示保留了多少字
+        if (!quiet && !task.stopped) toast(`${KIND_LABEL[task.modality]}生成完成 · 消耗 ${task.credits} 积分`);
         notice('ok', `${KIND_LABEL[task.modality]}生成完成`, `${task.prompt.slice(0, 18)} · ${task.outputs.length} 个结果`);
       } else if (e.type === 'task.failed') {
         if (task.status === 'canceled') return;
@@ -713,8 +721,10 @@ export function StoreProvider({ children }: { children: ReactNode }) {
       async cancelTask(id) {
         if (BACKEND === 'api') {
           try {
-            dispatch({ type: 'upsert_task', task: taskFromDTO(await api.cancelGeneration(id)) });
-            toast('已取消，积分已返还');
+            const dto = await api.cancelGeneration(id);
+            dispatch({ type: 'upsert_task', task: taskFromDTO(dto) });
+            // 正在输出的写作任务是"停止"：保留已生成的部分，结束后按实际字数结算
+            toast(dto.status === 'canceled' ? '已取消，积分已返还' : '正在停止，已生成的内容会保留');
           } catch (e) {
             toast(errorText(e), 'err');
           }

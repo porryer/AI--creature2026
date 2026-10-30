@@ -6,12 +6,17 @@ import { Observable } from 'rxjs';
 import { AppConfig, CONFIG } from '../config';
 import { Db, DB } from '../db/db';
 
+/** 控制消息：停止正在流式输出的写作任务（{ id }） */
+export const TASK_STOP = 'task.stop';
+
 type TaskEventType = 'task.progress' | 'task.succeeded' | 'task.failed';
 
 /** 跨实例消息：任务内容放得下时随通知发送，否则只传引用（通知有 8000 字节上限），由收到的实例重新读取 */
 type Remote =
   | { o: string; k: 'task'; u: string; t: TaskEventType; id: string; task?: TaskDTO }
   | { o: string; k: 'credits'; u: string; c: Extract<ServerEvent, { type: 'credits.changed' }>['credits'] }
+  /** 写作流式输出：i 任务 ID、f 起始位置、x 文本 */
+  | { o: string; k: 'delta'; u: string; i: string; f: number; x: string }
   | { o: string; k: 'ctl'; n: string; d: Record<string, unknown> };
 
 /** 同一任务在同一状态内的进度更新跨实例广播的最小间隔；状态变化与完成 / 失败事件总是广播 */
@@ -67,7 +72,7 @@ export class EventBus implements OnApplicationBootstrap, OnApplicationShutdown {
     this.taskLoader = fn;
   }
 
-  /** 注册控制消息处理（只处理其他实例发来的，本实例自行处理） */
+  /** 注册控制消息处理（control 只送达其他实例；signal 同时在本实例处理） */
   onControl(name: string, fn: (data: Record<string, unknown>) => void) {
     this.controls.set(name, fn);
   }
@@ -75,6 +80,7 @@ export class EventBus implements OnApplicationBootstrap, OnApplicationShutdown {
   emit(userId: string, event: ServerEvent) {
     this.emitter.emit(userId, event);
     if (event.type === 'credits.changed') this.broadcast({ o: this.instanceId, k: 'credits', u: userId, c: event.credits });
+    else if (event.type === 'task.delta') this.broadcast({ o: this.instanceId, k: 'delta', u: userId, i: event.task_id, f: event.offset, x: event.text });
     else if (event.type !== 'sync') this.broadcastTask(userId, event.type, event.task, event.task);
   }
 
@@ -100,6 +106,12 @@ export class EventBus implements OnApplicationBootstrap, OnApplicationShutdown {
 
   control(name: string, data: Record<string, unknown>) {
     this.broadcast({ o: this.instanceId, k: 'ctl', n: name, d: data });
+  }
+
+  /** 控制消息同时交给本实例与其他实例处理 */
+  signal(name: string, data: Record<string, unknown>) {
+    this.controls.get(name)?.(data);
+    this.control(name, data);
   }
 
   stream(userId: string): Observable<ServerEvent> {
@@ -140,6 +152,7 @@ export class EventBus implements OnApplicationBootstrap, OnApplicationShutdown {
     if (msg.k === 'ctl') return this.controls.get(msg.n)?.(msg.d);
     if (!this.listenerCount(msg.u)) return;
     if (msg.k === 'credits') return void this.emitter.emit(msg.u, { type: 'credits.changed', credits: msg.c });
+    if (msg.k === 'delta') return void this.emitter.emit(msg.u, { type: 'task.delta', task_id: msg.i, offset: msg.f, text: msg.x } satisfies ServerEvent);
     try {
       const task = msg.task ?? (await this.taskLoader?.(msg.u, msg.id));
       if (task) this.emitter.emit(msg.u, { type: msg.t, task });

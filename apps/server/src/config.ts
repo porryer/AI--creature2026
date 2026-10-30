@@ -54,6 +54,8 @@ export interface AppConfig {
   maxInflightTasks: number;
   /** 定时全量对账间隔（小时） */
   reconcileIntervalHours: number;
+  /** 已删除作品的文件保留天数，之后由存储清理删除 */
+  assetPurgeDays: number;
   /** 多实例之间广播事件的 PostgreSQL 通知频道（同一数据库上的不同环境应使用不同频道） */
   eventsChannel: string;
 }
@@ -135,6 +137,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
     generationRatePerMin: num(env.GENERATION_RATE_PER_MIN, 30),
     maxInflightTasks: num(env.MAX_INFLIGHT_TASKS, 20),
     reconcileIntervalHours: num(env.RECONCILE_INTERVAL_HOURS, 24),
+    assetPurgeDays: num(env.ASSET_PURGE_DAYS, 30),
     eventsChannel: env.EVENTS_CHANNEL || 'creature_events',
   };
 

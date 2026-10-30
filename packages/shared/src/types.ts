@@ -87,6 +87,8 @@ export interface TaskDTO {
   outputs: OutputDTO[];
   references: ReferenceDTO[];
   error: { code: string; message: string } | null;
+  /** 写作任务被用户中途停止：outputs 为已生成的部分 */
+  stopped: boolean;
   source: 'studio' | 'canvas' | 'agent' | 'template';
   created_at: string;
   finished_at: string | null;
@@ -361,6 +363,8 @@ export type ServerEvent =
   | { type: 'task.progress'; task: TaskDTO }
   | { type: 'task.succeeded'; task: TaskDTO }
   | { type: 'task.failed'; task: TaskDTO }
+  /** 写作任务的流式输出：从第 offset 个字符起的文本（推送可能乱序，按 offset 拼接；模型切换时 offset 回到 0） */
+  | { type: 'task.delta'; task_id: string; offset: number; text: string }
   | { type: 'credits.changed'; credits: BalanceDTO }
   /** 推送可能有遗漏（如服务端事件监听重连）：客户端应重新拉取进行中的任务与余额 */
   | { type: 'sync' };

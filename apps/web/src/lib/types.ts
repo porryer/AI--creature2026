@@ -29,6 +29,8 @@ export interface Task {
   createdAt: number;
   outputs: Output[];
   error?: string;
+  /** 写作任务被中途停止，结果为已生成的部分 */
+  stopped?: boolean;
   operation?: 'generate' | 'edit';
   /** 后端返回的路由说明（含自动切换备选模型的说明） */
   routingReason?: string;

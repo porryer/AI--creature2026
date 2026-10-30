@@ -5,12 +5,12 @@ import { AppConfig, CONFIG } from '../config';
 import { newId } from '../common/ids';
 import { CreditsService } from '../credits/credits.service';
 import { Db, DB } from '../db/db';
-import { EventBus } from '../events/event-bus';
+import { EventBus, TASK_STOP } from '../events/event-bus';
 import { MetricsService } from '../observability/metrics.service';
-import { GatewayError, ModelGateway } from '../gateway/model-gateway.service';
+import { GatewayError, ModelGateway, type StreamOptions } from '../gateway/model-gateway.service';
 import type { ReferenceInput } from '../gateway/provider';
 import { LabelingService, type LabeledOutput, type RawOutput } from '../safety/labeling.service';
-import { ModerationService } from '../safety/moderation.service';
+import { ModerationService, type Verdict } from '../safety/moderation.service';
 import { StorageService } from '../storage/storage.service';
 import { GenerationsService, ledgerMemo, type TaskRow } from './generations.service';
 
@@ -20,6 +20,12 @@ const MAX_ATTEMPTS = 3;
 const MODALITIES: Modality[] = ['image', 'video', 'text', 'audio'];
 /** 卡死任务检查间隔 */
 const RECOVER_INTERVAL_MS = 30_000;
+/** 流式输出的推送间隔：期间产出的文本合并为一条，推送前对已生成的全文做一次审核 */
+const DELTA_FLUSH_MS = 120;
+/** 单条推送的最大字数（跨实例通知有 8000 字节上限） */
+const DELTA_MAX_CHARS = 1500;
+/** 流式输出期间检查数据库中停止标记的间隔（跨实例停止通知丢失时的兜底） */
+const STOP_CHECK_MS = 1000;
 
 /**
  * 生成任务 Worker（docs/03-architecture.md 5.2 状态机）：
@@ -38,6 +44,8 @@ export class GenerationWorker implements OnApplicationBootstrap, OnApplicationSh
   private claiming?: Promise<number>;
   private refill = false;
   private readonly active = new Map<string, { task: TaskRow; done: Promise<void> }>();
+  /** 本实例正在流式输出的任务：用户停止时中止 */
+  private readonly stops = new Map<string, AbortController>();
 
   constructor(
     @Inject(CONFIG) private readonly config: AppConfig,
@@ -51,7 +59,9 @@ export class GenerationWorker implements OnApplicationBootstrap, OnApplicationSh
     private readonly bus: EventBus,
     private readonly metrics: MetricsService,
     private readonly analytics: AnalyticsService,
-  ) {}
+  ) {
+    bus.onControl(TASK_STOP, (d) => typeof d.id === 'string' && this.stops.get(d.id)?.abort());
+  }
 
   onApplicationBootstrap() {
     if (!this.config.worker.enabled) return;
@@ -158,6 +168,7 @@ export class GenerationWorker implements OnApplicationBootstrap, OnApplicationSh
 
   private async process(task: TaskRow) {
     const primary = findModel(task.model_code);
+    const stream = task.modality === 'text' && task.operation !== 'edit' ? this.streamer(task) : undefined;
     try {
       if (!primary) throw new GatewayError('MODEL_NOT_FOUND', `模型 ${task.model_code} 不存在`, []);
       await this.publish(task.id, task.user_id, 'running');
@@ -174,8 +185,12 @@ export class GenerationWorker implements OnApplicationBootstrap, OnApplicationSh
       // 发给模型的提示词附加角色设定与品牌规范；品牌标准色同时作为调色板传给适配器
       const prompt = composePrompt(task.prompt, task.modality, task.context);
       const palette = task.context?.brand_kit?.colors.map((c) => c.hex);
-      const result = await this.gateway.generate(primary, { taskId: task.id, modality: task.modality, operation: task.operation, prompt, params: task.params, references, palette }, onProgress);
+      const result = await this.gateway.generate(primary, { taskId: task.id, modality: task.modality, operation: task.operation, prompt, params: task.params, references, palette }, onProgress, stream?.options);
       await chain;
+      stream?.finish();
+      if (stream?.blocked) return await this.blockStream(task, stream.blocked);
+      // 停止时还没有任何输出：按取消处理，全额返还
+      if (result.stopped && !result.outputs.some((o) => o.text?.trim())) return await this.fail(task, 'canceled', 'CANCELED', `已停止生成，返还 ${task.estimated_credits} 积分`);
 
       // 只有当前这次尝试仍持有任务时才继续（任务可能已被超时回收并重新排队）
       const owned = await this.db.query(
@@ -203,12 +218,14 @@ export class GenerationWorker implements OnApplicationBootstrap, OnApplicationSh
       }
 
       // 写资产、结算积分、更新状态在同一事务内完成
-      const actual = Math.min(task.estimated_credits, estimateCredits(result.model, task.params));
+      // 写作按实际输出字数计费（不超过预估）
+      const billed = stream ? { ...task.params, chars: result.outputs.reduce((n, o) => n + (o.text?.length ?? 0), 0) } : task.params;
+      const actual = Math.min(task.estimated_credits, estimateCredits(result.model, billed));
       const done = await this.db.tx(async (q) => {
         const rows = await q.query(
-          `UPDATE generation_tasks SET status = 'succeeded', progress = 100, actual_credits = $2, vendor_cost_fen = $3, finished_at = now()
+          `UPDATE generation_tasks SET status = 'succeeded', progress = 100, actual_credits = $2, vendor_cost_fen = $3, finished_at = now(), stopped = $5
            WHERE id = $1 AND status = 'post_processing' AND attempt = $4 RETURNING id`,
-          [task.id, actual, result.vendorCostFen, task.attempt],
+          [task.id, actual, result.vendorCostFen, task.attempt, result.stopped],
         );
         if (!rows.length) return false;
         for (const [i, out] of labeled.entries()) await this.insertAsset(q, task, assetIds[i], out, result.outputs[i], result.model.name, i, labeled.length);
@@ -221,11 +238,85 @@ export class GenerationWorker implements OnApplicationBootstrap, OnApplicationSh
       this.bus.emit(task.user_id, { type: 'task.succeeded', task: dto });
       await this.credits.notify(task.account_id);
     } catch (e) {
+      stream?.finish();
+      if (stream?.blocked) return await this.blockStream(task, stream.blocked);
       const code = e instanceof GatewayError ? e.code : 'INTERNAL';
       const message = e instanceof GatewayError ? e.message : '生成服务异常';
       if (!(e instanceof GatewayError)) this.logger.error(`[${task.id}] 处理失败`, e instanceof Error ? e.stack : String(e));
       await this.fail(task, 'failed', code, `${message}，已返还 ${task.estimated_credits} 积分`);
+    } finally {
+      stream?.close();
     }
+  }
+
+  /**
+   * 写作任务的流式输出：适配器产出的文本按 DELTA_FLUSH_MS 合并推送；
+   * 每次推送前审核已生成的全文，命中拦截时中止生成（已推送的部分由客户端在任务失败后清除，未通过的文字不会推送）。
+   * 切换备选模型时从头重新推送（offset 回到 0）。
+   */
+  private streamer(task: TaskRow) {
+    const stop = new AbortController();
+    const abort = new AbortController();
+    this.stops.set(task.id, stop);
+    let text = '';
+    let sent = 0;
+    let candidate = 0;
+    let timer: NodeJS.Timeout | undefined;
+    let lastStopCheck = Date.now();
+    let blocked: Verdict | null = null;
+    const flush = () => {
+      clearTimeout(timer);
+      timer = undefined;
+      if (blocked || abort.signal.aborted) return;
+      const v = this.moderation.checkText(text);
+      if (v.verdict === 'block') {
+        blocked = v;
+        abort.abort();
+        return;
+      }
+      while (sent < text.length) {
+        const piece = text.slice(sent, sent + DELTA_MAX_CHARS);
+        this.bus.emit(task.user_id, { type: 'task.delta', task_id: task.id, offset: sent, text: piece });
+        sent += piece.length;
+      }
+      if (Date.now() - lastStopCheck >= STOP_CHECK_MS && !stop.signal.aborted) {
+        lastStopCheck = Date.now();
+        void this.db
+          .query<{ stop_requested: boolean }>('SELECT stop_requested FROM generation_tasks WHERE id = $1', [task.id])
+          .then(([r]) => r?.stop_requested && stop.abort())
+          .catch(() => undefined);
+      }
+    };
+    const options: StreamOptions = {
+      onDelta: (t, i) => {
+        if (i !== candidate) {
+          candidate = i;
+          text = '';
+          sent = 0;
+        }
+        text += t;
+        timer ??= setTimeout(flush, DELTA_FLUSH_MS);
+      },
+      stop: stop.signal,
+      abort: abort.signal,
+    };
+    return {
+      options,
+      get blocked() {
+        return blocked;
+      },
+      /** 推送剩余的文本（并做最后一次审核） */
+      finish: flush,
+      close: () => {
+        clearTimeout(timer);
+        this.stops.delete(task.id);
+      },
+    };
+  }
+
+  private async blockStream(task: TaskRow, v: Verdict) {
+    await this.moderation.record({ userId: task.user_id, targetType: 'output', targetId: task.id, result: v });
+    await this.fail(task, 'blocked', 'CONTENT_BLOCKED', '生成内容未通过审核，已停止生成并返还积分');
   }
 
   /** 读取参考图：生成的作品用内部原始文件（不带角标），上传的素材即原图 */
@@ -238,8 +329,9 @@ export class GenerationWorker implements OnApplicationBootstrap, OnApplicationSh
       ...(ctx?.place_logo && ctx.brand_kit?.logo_asset_id ? [{ asset_id: ctx.brand_kit.logo_asset_id, role: 'logo' as const }] : []),
     ];
     if (!refs.length && !task.mask_key) return [];
+    // 文件已被清理的作品（删除超过宽限期）跳过
     const rows = await this.db.query<{ id: string; mime_type: string; storage_key: string; raw_storage_key: string | null; width: number | null; height: number | null }>(
-      'SELECT id, mime_type, storage_key, raw_storage_key, width, height FROM assets WHERE id = ANY($1::text[]) AND user_id = $2',
+      'SELECT id, mime_type, storage_key, raw_storage_key, width, height FROM assets WHERE id = ANY($1::text[]) AND user_id = $2 AND files_purged_at IS NULL',
       [refs.map((r) => r.asset_id), task.user_id],
     );
     const byId = new Map(rows.map((r) => [r.id, r]));
@@ -279,7 +371,7 @@ export class GenerationWorker implements OnApplicationBootstrap, OnApplicationSh
     );
   }
 
-  private async fail(task: TaskRow, status: 'failed' | 'blocked', code: string, message: string) {
+  private async fail(task: TaskRow, status: 'failed' | 'blocked' | 'canceled', code: string, message: string) {
     const changed = await this.db.tx(async (q) => {
       const rows = await q.query(
         `UPDATE generation_tasks SET status = $2, error_code = $3, error_message = $4, finished_at = now()
@@ -287,7 +379,8 @@ export class GenerationWorker implements OnApplicationBootstrap, OnApplicationSh
         [task.id, status, code, message, task.attempt],
       );
       if (!rows.length) return false;
-      await this.credits.refund(q, task.account_id, task.id, `${status === 'blocked' ? '审核拦截' : '生成失败'}返还 · ${findModel(task.model_code)?.name ?? task.model_code}`);
+      const reason = { blocked: '审核拦截', canceled: '停止生成', failed: '生成失败' }[status];
+      await this.credits.refund(q, task.account_id, task.id, `${reason}返还 · ${findModel(task.model_code)?.name ?? task.model_code}`);
       return true;
     });
     if (!changed) return;
@@ -333,7 +426,9 @@ export class GenerationWorker implements OnApplicationBootstrap, OnApplicationSh
     const rows = await this.db.query<TaskRow>(`SELECT * FROM generation_tasks WHERE status IN ('running', 'post_processing')`);
     for (const t of rows) {
       if (!t.started_at || now - new Date(t.started_at).getTime() < STALE_MS[t.modality]) continue;
-      if (t.attempt < MAX_ATTEMPTS) {
+      if (t.stop_requested) {
+        await this.fail(t, 'canceled', 'CANCELED', `已停止生成，返还 ${t.estimated_credits} 积分`);
+      } else if (t.attempt < MAX_ATTEMPTS) {
         await this.db.query(`UPDATE generation_tasks SET status = 'queued', progress = 0 WHERE id = $1 AND status IN ('running', 'post_processing') AND attempt = $2`, [t.id, t.attempt]);
         this.logger.warn(`[${t.id}] 处理超时，重新排队（第 ${t.attempt} 次）`);
       } else {

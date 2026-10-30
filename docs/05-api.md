@@ -48,7 +48,7 @@
 | 429 | `RATE_LIMITED` | 请求过于频繁（验证码、上传、发布、举报的每日上限；生成任务每分钟提交次数与进行中任务数），附 `Retry-After` |
 | 503 | `MODEL_UNAVAILABLE` | 所选模型及备选模型均不可用 |
 
-### 1.3 实现状态（Sprint 1–9）
+### 1.3 实现状态（Sprint 1–10）
 
 已实现（`apps/server`，带集成测试）：
 
@@ -57,8 +57,8 @@
 | 认证 | `POST /auth/sms/send`、`POST /auth/sms/login`、`POST /auth/refresh`、`POST /auth/logout` |
 | 用户 | `GET /me`（含 `role`）、`PATCH /me` |
 | 模型 | `GET /models`、`POST /models/route` |
-| 生成 | `POST /generations`（含图像编辑，见 3.1）、`GET /generations`、`GET /generations/{id}`、`POST /generations/{id}/cancel` |
-| 推送 | `GET /events`（SSE，替代 3.3 节的 WebSocket，见下） |
+| 生成 | `POST /generations`（含图像编辑，见 3.1）、`GET /generations`、`GET /generations/{id}`、`POST /generations/{id}/cancel`（排队中取消；写作生成中为停止，见 3.3） |
+| 推送 | `GET /events`（SSE，替代 3.3 节的 WebSocket，见下；写作任务流式输出 `task.delta`） |
 | 资产 | `GET /assets?kind=&favorite=&q=&folder=`（`folder=none` 为未归档）、`GET /assets/{id}`、`PATCH /assets/{id}`、`DELETE /assets/{id}`（同时撤回广场发布）、`POST /assets/move`、`GET /assets/{id}/download`、`GET /files/{token}`（签名文件；带 `dl` 参数时以附件下载） |
 | 文件夹 | `GET /asset-folders`（含作品数）、`POST /asset-folders`、`PATCH /asset-folders/{id}`、`DELETE /asset-folders/{id}`（作品移回未归档） |
 | 上传 | `POST /assets/uploads`、`PUT /uploads/{id}?exp=&sig=`（签名地址，无需登录态）、`POST /assets/uploads/{id}/complete`，见 3.7 |
@@ -72,7 +72,7 @@
 | 订单 | `POST /orders`、`GET /orders/{id}`、`POST /orders/{id}/mock-pay`（仅 `PAYMENTS_MODE=mock`） |
 | 运维 | `GET /healthz`、`GET /metrics`（Prometheus 文本，令牌保护，见 [09 上线准备](./09-launch-readiness.md)） |
 
-其余接口（写作流式、画布运行与分享、Agent、用户发布模板、评论与关注流、团队、支付回调、开放 API）按 [开发计划](./07-roadmap.md) 在后续 Sprint 实现。刷新令牌通过 httpOnly Cookie `crt_rt`（路径 `/v1/auth`）下发，前端不接触。
+其余接口（画布运行与分享、Agent、用户发布模板、评论与关注流、团队、支付回调、开放 API）按 [开发计划](./07-roadmap.md) 在后续 Sprint 实现。刷新令牌通过 httpOnly Cookie `crt_rt`（路径 `/v1/auth`）下发，前端不接触。
 
 ## 2. 接口清单
 
@@ -104,7 +104,7 @@
 | POST | `/generations` | 创建生成任务 |
 | GET | `/generations/{id}` | 查询任务详情 |
 | GET | `/generations?status=&modality=&cursor=` | 历史任务列表 |
-| POST | `/generations/{id}/cancel` | 取消排队中的任务 |
+| POST | `/generations/{id}/cancel` | 取消排队中的任务；写作任务生成中时为停止（保留已生成的部分） |
 | POST | `/generations/{id}/retry` | 失败任务重试（新任务） |
 | GET | `/generations/{id}/events` | SSE 推送任务进度（WebSocket 不可用时的降级） |
 | POST | `/prompts/enhance` | 提示词 AI 润色 |
@@ -113,7 +113,7 @@
 
 | 方法 | 路径 | 说明 |
 |---|---|---|
-| POST | `/writing/completions` | 流式生成文本（SSE），按输出字数计费 |
+| POST | `/writing/completions` | 流式生成文本（SSE），按输出字数计费。**当前实现**：写作仍通过 `POST /generations` 提交，输出经 `/events` 以 `task.delta` 推送（见 3.3），可多实例、可停止、复用排队与账务 |
 | POST | `/writing/storyboard` | 剧本 → 结构化分镜表 |
 
 ### 2.5 资产
@@ -329,9 +329,14 @@ Content-Type: application/json
 { "type": "task.progress",  "task": { "id": "tsk_…", "status": "running", "progress": 45, "…": "…" } }
 { "type": "task.succeeded", "task": { "id": "tsk_…", "status": "succeeded", "outputs": [ { "asset_id": "ast_…", "url": "/v1/files/…", "content_id": "CRT-20261027-3FD0DEBA" } ] } }
 { "type": "task.failed",    "task": { "id": "tsk_…", "status": "failed", "error": { "code": "ALL_MODELS_FAILED", "message": "…已返还 12 积分" } } }
+{ "type": "task.delta",     "task_id": "tsk_…", "offset": 120, "text": "秋天是饮品消费的拐点……" }
 { "type": "credits.changed", "credits": { "available": 1776, "frozen": 0, "expiring_soon": 20 } }
 { "type": "sync" }
 ```
+
+**写作流式输出**：写作任务（`modality = text`、`operation = generate`）的输出按约 120 ms 合并推送一次 `task.delta`，`text` 是从第 `offset` 个字符开始的文本。跨实例推送可能乱序，客户端按 `offset` 拼接（不连续的片段先暂存）；`offset` 为 0 表示重新开始（主模型失败、切换了备选模型）。每次推送前对已生成的全文审核，命中拦截时立即中止生成，任务以 `blocked`（`CONTENT_BLOCKED`）结束并全额返还，未通过的文字不会推送，客户端应清除已显示的部分。任务结束时以 `task.succeeded` 中的完整结果为准（末尾附 AI 生成标识）。
+
+**停止**：写作任务生成中调用 `POST /generations/{id}/cancel` 返回 `200` 与当前任务（`status` 仍为 `running`）；处理该任务的实例（经跨实例控制消息，另每秒检查一次停止标记兜底）结束生成，保留已生成的部分，任务以 `succeeded` 结束、`stopped: true`，按实际字数结算；还没有任何输出时按取消处理并全额返还。写作按实际输出字数计费（每 2000 字 1 积分，不超过预估）。
 
 `task` 字段与 `GET /generations/{id}` 的返回结构相同。推送不保证送达：`sync` 表示服务端的事件监听刚刚重连、期间的事件可能丢失，客户端应重新拉取进行中的任务与余额；客户端自己的连接断开重连后也应同样处理（前端在每次重连成功时执行）。多个后端实例时，用户的推送连接与处理任务的 Worker 可以在不同实例上（见 [09 上线准备 · 多实例部署](./09-launch-readiness.md#7-多实例部署)）。画布多人协作上线时再引入 WebSocket（Yjs 协作通道）。
 

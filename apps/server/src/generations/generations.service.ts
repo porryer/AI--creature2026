@@ -31,7 +31,7 @@ import { newId } from '../common/ids';
 import { parse } from '../common/http';
 import { CreditsService } from '../credits/credits.service';
 import { Db, DB, isUniqueViolation } from '../db/db';
-import { EventBus } from '../events/event-bus';
+import { EventBus, TASK_STOP } from '../events/event-bus';
 import { ParamsSchema, RoutingSchema } from '../gateway/gateway.module';
 import { ModelGateway } from '../gateway/model-gateway.service';
 import { LibraryService } from '../library/library.service';
@@ -95,6 +95,8 @@ export interface TaskRow {
   estimated_credits: number;
   actual_credits: number | null;
   attempt: number;
+  stop_requested: boolean;
+  stopped: boolean;
   error_code: string | null;
   error_message: string | null;
   request_hash: string;
@@ -365,7 +367,17 @@ export class GenerationsService {
       await this.credits.refund(q, r.account_id, id, `取消任务返还 · ${findModel(r.model_code)?.name ?? r.model_code}`);
       return rows[0];
     });
-    if (!canceled) throw Errors.conflict('TASK_NOT_CANCELABLE', '任务已开始生成，无法取消');
+    if (!canceled) {
+      // 正在流式输出的写作任务可以停止：保留已生成的部分，按实际字数结算（由处理该任务的 Worker 完成）
+      if (r.modality === 'text' && r.operation !== 'edit') {
+        const [running] = await this.db.query<TaskRow>(`UPDATE generation_tasks SET stop_requested = true WHERE id = $1 AND status = 'running' RETURNING *`, [id]);
+        if (running) {
+          this.bus.signal(TASK_STOP, { id });
+          return this.toDTO(running);
+        }
+      }
+      throw Errors.conflict('TASK_NOT_CANCELABLE', '任务已开始生成，无法取消');
+    }
     const task = await this.toDTO(canceled);
     this.bus.emit(userId, { type: 'task.failed', task });
     await this.credits.notify(r.account_id);
@@ -411,6 +423,7 @@ export class GenerationsService {
       references: r.input_refs ?? [],
       context: contextSummary(r.context),
       error: r.error_code ? { code: r.error_code, message: r.error_message ?? '' } : null,
+      stopped: r.stopped,
       source: r.source as TaskDTO['source'],
       created_at: new Date(r.created_at).toISOString(),
       finished_at: r.finished_at ? new Date(r.finished_at).toISOString() : null,

@@ -32,7 +32,10 @@ function imageTag(r: ReferenceInput, x: number, y: number, w: number, h: number,
  * 演示标记（只在 Mock 模式生效）：
  * - 提示词含“失败”：所有候选模型均报错，任务失败并返还积分；
  * - 提示词含“超时”：主模型超时，网关切换备选模型后成功；
- * - 提示词含“敏感画面”：输出审核拦截，返还积分。
+ * - 提示词含“敏感画面”：输出审核拦截，返还积分；
+ * - 提示词含“敏感文字”（写作）：正文中段出现违禁内容，流式审核中途拦截。
+ *
+ * 写作任务支持流式输出：按小段逐步产出文本，用户停止时返回已生成的部分。
  *
  * 参考图：图像的主体 / 角色参考会被放进新场景中央，风格参考作为底图；视频的首帧 / 尾帧直接驱动画面。
  * 图像编辑：以源图为底，按涂抹区域重绘 / 模糊补全，扩图向四周延展，抠图保留中央主体，超分按倍数放大。
@@ -48,6 +51,7 @@ export class MockProvider implements ProviderAdapter {
 
   async generate(req: AdapterRequest, onProgress: (pct: number) => void): Promise<AdapterResult> {
     const total = Math.round((this.latencyMs[req.modality] ?? 0) * (req.model.speed >= 4 ? 0.8 : 1.2));
+    if (req.onDelta && req.modality === 'text' && req.operation !== 'edit') return this.stream(req, total, onProgress);
     const steps = total > 0 ? 6 : 1;
     for (let i = 1; i <= steps; i++) {
       if (req.signal.aborted) throw new VendorError('VENDOR_TIMEOUT', '供应商响应超时', true);
@@ -59,6 +63,27 @@ export class MockProvider implements ProviderAdapter {
     const flags = req.prompt.includes('敏感画面') ? ['sensitive'] : undefined;
     const outputs = this.render(req).map((o) => ({ ...o, flags }));
     return { outputs, vendorCostFen: estimateCredits(req.model, req.params) * 3 };
+  }
+
+  /** 流式写作：把完整结果切成小段，在模拟耗时内逐段产出 */
+  private async stream(req: AdapterRequest, total: number, onProgress: (pct: number) => void): Promise<AdapterResult> {
+    const full = this.render(req)[0].text!;
+    const chunks = full.match(/[\s\S]{1,6}/g) ?? [];
+    const cost = estimateCredits(req.model, req.params) * 3;
+    let out = '';
+    for (const [i, c] of chunks.entries()) {
+      if (req.stop?.aborted) return { outputs: [textOutput(out)], vendorCostFen: cost, stopped: true };
+      if (req.signal.aborted) throw new VendorError('VENDOR_TIMEOUT', '供应商响应超时', true);
+      if (total > 0) await sleep(total / chunks.length, req.signal);
+      if (i >= chunks.length / 2) {
+        if (req.prompt.includes('超时') && req.candidateIndex === 0) throw new VendorError('VENDOR_TIMEOUT', `${req.model.name} 响应超时`, true);
+        if (req.prompt.includes('失败')) throw new VendorError('VENDOR_ERROR', `${req.model.name} 返回错误`, true);
+      }
+      out += c;
+      req.onDelta!(c);
+      onProgress(Math.round(((i + 1) / chunks.length) * 85));
+    }
+    return { outputs: [textOutput(out)], vendorCostFen: cost };
   }
 
   private render(req: AdapterRequest): RawOutput[] {
@@ -122,10 +147,16 @@ export class MockProvider implements ProviderAdapter {
       return [{ kind: 'audio', mime: 'audio/wav', data: encodeWav(samples, SAMPLE_RATE), durationMs: sec * 1000 }];
     }
     // 引用品牌套件时提示词后附有品牌规范，题目只取第一行
-    const text = req.operation === 'edit' ? mockTransform((p.transform as TransformKind) ?? '改写', req.prompt) : mockWriting(p.template, req.prompt.split('\n')[0], p.tone);
-    return [{ kind: 'text', mime: 'text/plain; charset=utf-8', data: Buffer.from(text), text }];
+    let text = req.operation === 'edit' ? mockTransform((p.transform as TransformKind) ?? '改写', req.prompt) : mockWriting(p.template, req.prompt.split('\n')[0], p.tone);
+    if (req.prompt.includes('敏感文字')) {
+      const mid = Math.floor(text.length / 2);
+      text = `${text.slice(0, mid)}（演示：此处出现违规内容）${text.slice(mid)}`;
+    }
+    return [textOutput(text)];
   }
 }
+
+const textOutput = (text: string): RawOutput => ({ kind: 'text', mime: 'text/plain; charset=utf-8', data: Buffer.from(text), text });
 
 /** 图像编辑的模拟结果：确定性的 SVG，内嵌源图并按工具处理 */
 function renderEdit(prompt: string, p: GenerationParams, src: ReferenceInput | undefined, mask: ReferenceInput | undefined): RawOutput {
