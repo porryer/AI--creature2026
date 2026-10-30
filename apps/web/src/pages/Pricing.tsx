@@ -1,7 +1,8 @@
 import { Check, ShieldCheck } from 'lucide-react';
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { CREDIT_PACKS, PLANS, qrPattern, type PlanCode } from '@creature/shared';
 import { Modal, Segmented } from '../components/ui';
+import { track } from '../lib/analytics';
 import { fmt, USAGE_30D } from '../lib/mock';
 import { useStore, type PurchaseItem } from '../lib/store';
 
@@ -13,6 +14,7 @@ const yuan = (fen: number) => (fen % 100 === 0 ? String(fen / 100) : (fen / 100)
 export function Pricing() {
   const { state, purchase, mode } = useStore();
   const [cycle, setCycle] = useState<'month' | 'year'>('year');
+  useEffect(() => track({ name: 'paywall_shown', props: { trigger: 'pricing' } }), []);
   const [buy, setBuy] = useState<Purchase | null>(null);
   const [paying, setPaying] = useState(false);
   const [channel, setChannel] = useState<'wechat' | 'alipay'>('wechat');

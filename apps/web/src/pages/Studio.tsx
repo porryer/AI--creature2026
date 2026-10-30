@@ -33,6 +33,7 @@ import { Segmented, Status, Switch } from '../components/ui';
 import { waveFor } from '@creature/shared';
 import { BRAND_KIT, CHARACTERS, VOICES, WRITING_TEMPLATES, timeAgo } from '../lib/mock';
 import { AI_TEXT_LABEL, editLabel, estimateCredits, modelByCode, modelsFor, QUEUE_POSITION_CAP, stripAiTextLabel, type GenerationParams, type TransformKind } from '@creature/shared';
+import { track } from '../lib/analytics';
 import { BACKEND } from '../lib/api';
 import { contextInput, NO_CONTEXT, type ContextChoice } from '../lib/library';
 import { navigate } from '../lib/router';
@@ -122,6 +123,9 @@ function useHandoff(mode: Modality, apply: (prompt: string, autostart: boolean, 
 function SubmitButton({ credits, disabled, onClick, label = '生成' }: { credits: number; disabled?: boolean; onClick: () => void; label?: string }) {
   const { state } = useStore();
   const short = credits > state.available;
+  useEffect(() => {
+    if (short) track({ name: 'paywall_shown', props: { trigger: 'insufficient_credits' } });
+  }, [short]);
   return (
     <>
       {short ? (
@@ -945,7 +949,7 @@ function WriteStudio() {
               onClick={() => {
                 const body = board ? board.map((r) => r.join(' | ')).join('\n') : text;
                 navigator.clipboard?.writeText(`${body}\n\n${AI_TEXT_LABEL}`).then(
-                  () => toast('已复制，末尾附带“本内容由 AI 生成”标识'),
+                  () => (track({ name: 'asset_export', props: { channel: 'copy', asset_type: 'text' } }), toast('已复制，末尾附带“本内容由 AI 生成”标识')),
                   () => toast('复制失败，请手动选中文本复制', 'err'),
                 );
               }}

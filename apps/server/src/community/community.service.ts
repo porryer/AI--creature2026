@@ -1,5 +1,6 @@
 import { Inject, Injectable } from '@nestjs/common';
 import type { FeedTab, GenerationParams, Page, PostDTO, PostStatus, RemixDTO, ReportReason } from '@creature/shared';
+import { AnalyticsService } from '../analytics/analytics.service';
 import { AppError, Errors } from '../common/errors';
 import { newId } from '../common/ids';
 import { Db, DB, isUniqueViolation, type Queryable } from '../db/db';
@@ -75,6 +76,7 @@ export class CommunityService {
     @Inject(DB) private readonly db: Db,
     private readonly storage: StorageService,
     private readonly moderation: ModerationService,
+    private readonly analytics: AnalyticsService,
   ) {}
 
   toDTO(r: PostRow, viewerId: string): PostDTO {
@@ -154,6 +156,7 @@ export class CommunityService {
       if (isUniqueViolation(e)) return this.get(userId, (await this.existingPost(b.asset_id))!);
       throw e;
     }
+    await this.analytics.track(userId, 'asset_export', { channel: 'publish', asset_id: asset.id, asset_type: asset.kind, source: asset.source, status });
     return this.get(userId, postId);
   }
 

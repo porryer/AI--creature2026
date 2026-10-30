@@ -16,6 +16,7 @@ import {
 } from '@creature/shared';
 import { Crown, Pencil, Plus, Trash2, Upload, X } from 'lucide-react';
 import { useEffect, useState, type ReactNode } from 'react';
+import { track } from '../lib/analytics';
 import { api, ApiError } from '../lib/api';
 import { reloadLibrary, useLibrary, type ContextChoice } from '../lib/library';
 import { navigate } from '../lib/router';
@@ -36,6 +37,7 @@ const splitTags = (s: string) =>
     .filter(Boolean);
 
 function Upgrade() {
+  useEffect(() => track({ name: 'paywall_shown', props: { trigger: 'library' } }), []);
   return (
     <div className="panel upgrade-card">
       <Crown size={20} />

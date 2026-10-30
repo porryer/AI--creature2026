@@ -23,6 +23,7 @@ import {
 } from '@creature/shared';
 import { createHash } from 'node:crypto';
 import { z } from 'zod';
+import { AnalyticsService } from '../analytics/analytics.service';
 import { AssetsService } from '../assets/assets.service';
 import { imageInfo } from '../assets/image-info';
 import { Errors } from '../common/errors';
@@ -87,6 +88,7 @@ export interface TaskRow {
   input_refs: ReferenceDTO[];
   mask_key: string | null;
   context: ContextSnapshot | null;
+  template_id: string | null;
   status: TaskStatus;
   queue: 'p0' | 'p1' | 'p2';
   progress: number;
@@ -130,6 +132,7 @@ export class GenerationsService {
     private readonly bus: EventBus,
     private readonly storage: StorageService,
     private readonly library: LibraryService,
+    private readonly analytics: AnalyticsService,
   ) {
     // 其他实例广播任务事件时，本实例据此读取任务推送给自己的连接
     bus.setTaskLoader(async (userId, taskId) => {
@@ -138,7 +141,8 @@ export class GenerationsService {
     });
   }
 
-  async create(userId: string, rawBody: unknown, idemKey: string | undefined): Promise<{ task: TaskDTO; replay: boolean }> {
+  /** 创建生成任务；templateId 只由模板接口传入（客户端不能在请求体中自称来自模板） */
+  async create(userId: string, rawBody: unknown, idemKey: string | undefined, opts: { templateId?: string } = {}): Promise<{ task: TaskDTO; replay: boolean }> {
     if (!idemKey || !/^[\w-]{8,100}$/.test(idemKey)) throw Errors.invalid('请求头缺少有效的 Idempotency-Key（8–100 位字母、数字、- 或 _）');
     const body = parse(CreateSchema, rawBody);
     const requestHash = createHash('sha256').update(JSON.stringify(body)).digest('hex');
@@ -209,8 +213,8 @@ export class GenerationsService {
         await this.credits.freeze(q, accountId, estimate, id, `冻结 · ${ledgerMemo({ modality: body.modality, params }, model.name)}`);
         await q.query(
           `INSERT INTO generation_tasks (id, user_id, account_id, modality, operation, model_code, routing_strategy, routing_reason, prompt, params,
-             status, queue, estimated_credits, idempotency_key, request_hash, source, input_refs, mask_key, context)
-           VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, 'queued', $11, $12, $13, $14, $15, $16, $17, $18)`,
+             status, queue, estimated_credits, idempotency_key, request_hash, source, input_refs, mask_key, context, template_id)
+           VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, 'queued', $11, $12, $13, $14, $15, $16, $17, $18, $19)`,
           [
             id,
             userId,
@@ -230,6 +234,7 @@ export class GenerationsService {
             JSON.stringify(body.references),
             maskKey,
             context ? JSON.stringify(context) : null,
+            opts.templateId ?? null,
           ],
         );
         if (context) await this.library.markUsed(q, context);
@@ -247,6 +252,19 @@ export class GenerationsService {
     const task = await this.toDTO((await this.row(userId, id))!);
     this.bus.emit(userId, { type: 'task.progress', task });
     await this.credits.notify(accountId);
+    await this.analytics.track(userId, 'prompt_submit', {
+      task_id: id,
+      mode: body.modality,
+      operation: body.operation,
+      model: model.code,
+      routing_strategy: strategy,
+      ref_count: body.references.length,
+      estimated_credits: estimate,
+      source: body.source,
+      template_id: opts.templateId ?? null,
+      characters: context?.characters.length ?? 0,
+      brand_kit: !!context?.brand_kit,
+    });
     return { task, replay: false };
   }
 

@@ -96,29 +96,6 @@ export interface Post {
   tags: string[];
 }
 
-export interface TemplateStep {
-  kind: Modality;
-  title: string;
-  credits: number;
-}
-
-export interface Template {
-  id: string;
-  title: string;
-  desc: string;
-  category: string;
-  kind: 'single' | 'workflow';
-  cover: string;
-  ratio: string;
-  uses: number;
-  rating: number;
-  author: string;
-  official?: boolean;
-  steps: TemplateStep[];
-  prompt: string;
-  modality: Modality;
-}
-
 export interface Notice {
   id: string;
   time: number;

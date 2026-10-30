@@ -1,5 +1,6 @@
 import { Inject, Injectable, Logger, OnApplicationBootstrap, OnApplicationShutdown } from '@nestjs/common';
 import { composePrompt, estimateCredits, findModel, type Modality, type TaskStatus } from '@creature/shared';
+import { AnalyticsService } from '../analytics/analytics.service';
 import { AppConfig, CONFIG } from '../config';
 import { newId } from '../common/ids';
 import { CreditsService } from '../credits/credits.service';
@@ -49,6 +50,7 @@ export class GenerationWorker implements OnApplicationBootstrap, OnApplicationSh
     private readonly generations: GenerationsService,
     private readonly bus: EventBus,
     private readonly metrics: MetricsService,
+    private readonly analytics: AnalyticsService,
   ) {}
 
   onApplicationBootstrap() {
@@ -214,7 +216,7 @@ export class GenerationWorker implements OnApplicationBootstrap, OnApplicationSh
         return true;
       });
       if (!done) return;
-      this.finished(task, 'succeeded');
+      await this.finished(task, 'succeeded');
       const dto = await this.generations.toDTO((await this.generations.row(task.user_id, task.id))!);
       this.bus.emit(task.user_id, { type: 'task.succeeded', task: dto });
       await this.credits.notify(task.account_id);
@@ -289,17 +291,29 @@ export class GenerationWorker implements OnApplicationBootstrap, OnApplicationSh
       return true;
     });
     if (!changed) return;
-    this.finished(task, status);
+    await this.finished(task, status, code);
     const dto = await this.generations.toDTO((await this.generations.row(task.user_id, task.id))!);
     this.bus.emit(task.user_id, { type: 'task.failed', task: dto });
     await this.credits.notify(task.account_id);
   }
 
-  /** 任务结束计数与端到端耗时（从提交到结束，含排队） */
-  private finished(task: TaskRow, status: string) {
+  /** 任务结束：计数与端到端耗时（从提交到结束，含排队），并记录埋点 */
+  private async finished(task: TaskRow, status: string, errorCode?: string) {
     const labels = { modality: task.modality, status };
+    const durationMs = Date.now() - new Date(task.created_at).getTime();
     this.metrics.inc('creature_tasks_finished_total', '结束的生成任务数', labels);
-    this.metrics.observe('creature_task_duration_seconds', '生成任务从提交到结束的耗时', { modality: task.modality }, (Date.now() - new Date(task.created_at).getTime()) / 1000);
+    this.metrics.observe('creature_task_duration_seconds', '生成任务从提交到结束的耗时', { modality: task.modality }, durationMs / 1000);
+    await this.analytics.track(task.user_id, status === 'succeeded' ? 'task_succeeded' : 'task_failed', {
+      task_id: task.id,
+      task_type: task.modality,
+      operation: task.operation,
+      model: task.model_code,
+      duration_ms: durationMs,
+      error_code: errorCode ?? null,
+      retry_count: Math.max(0, task.attempt - 1),
+      source: task.source,
+      template_id: task.template_id,
+    });
   }
 
   private async setProgress(task: TaskRow, pct: number) {

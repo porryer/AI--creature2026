@@ -2,6 +2,8 @@ import { AssetViewer } from './components/AssetViewer';
 import { ImageEditor } from './components/ImageEditor';
 import { NavRail, TabBar, TopBar } from './components/Shell';
 import { Toasts } from './components/ui';
+import { useEffect } from 'react';
+import { track } from './lib/analytics';
 import { useRoute } from './lib/router';
 import { useStore } from './lib/store';
 import { Login } from './pages/Login';
@@ -29,6 +31,8 @@ export function App() {
 
 function Workspace() {
   const route = useRoute();
+  const page = route.name === 'studio' ? `studio-${route.mode}` : route.name;
+  useEffect(() => track({ name: 'page_view', props: { page } }), [page]);
   // 工作台与画布是满屏布局，内部自行滚动
   const fullBleed = route.name === 'studio' || route.name === 'canvas';
 

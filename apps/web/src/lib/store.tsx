@@ -5,6 +5,9 @@ import {
   mockTransform,
   mockWriting,
   modelByCode,
+  renderTemplate,
+  routeModel,
+  templateParams,
   TIER_LABEL,
   type AssetDTO,
   type FolderDTO,
@@ -16,6 +19,7 @@ import {
   type ReferenceRole,
   type ServerEvent,
   type TaskDTO,
+  type TemplateDTO,
   type TransformKind,
 } from '@creature/shared';
 import { api, ApiError, BACKEND, onAccountSuspended, refresh, subscribeEvents } from './api';
@@ -30,7 +34,7 @@ export type Theme = 'system' | 'dark' | 'light';
 export type AuthState = 'pending' | 'anon' | 'authed';
 
 export interface Handoff {
-  to: 'studio' | 'canvas';
+  to: 'studio' | 'canvas' | 'templates';
   prompt?: string;
   mode?: Modality;
   autostart?: boolean;
@@ -423,6 +427,8 @@ interface Ctx {
   cancelTask: (id: string) => Promise<void>;
   /** 上传图片到资产库；离线模式只在本地预览 */
   uploadImage: (file: File) => Promise<Asset | null>;
+  /** 用单步模板生成：values 为文字输入，images 为图片输入；返回任务 ID */
+  submitTemplate: (t: TemplateDTO, values: Record<string, string>, images: Record<string, Asset>) => Promise<string | null>;
   purchase: (item: PurchaseItem) => Promise<boolean>;
   login: (phone: string, code: string) => Promise<void>;
   logout: () => Promise<void>;
@@ -717,6 +723,23 @@ export function StoreProvider({ children }: { children: ReactNode }) {
         dispatch({ type: 'finish_task', id, ok: false, outputs: [], assets: [], error: '已取消' });
         dispatch({ type: 'patch_task', id, patch: { status: 'canceled' } });
         toast('已取消，积分已返还');
+      },
+      async submitTemplate(t, values, images) {
+        const prompt = renderTemplate(t, values);
+        if (BACKEND === 'api') {
+          try {
+            const dto = await api.generateFromTemplate(t.id, { values, images: Object.fromEntries(Object.entries(images).map(([k, a]) => [k, a.id])) }, uid('idem-'));
+            dispatch({ type: 'upsert_task', task: taskFromDTO(dto) });
+            return dto.id;
+          } catch (e) {
+            toast(errorText(e), 'err');
+            return null;
+          }
+        }
+        // 离线演示：按渲染后的提示词走本地模拟
+        const params = templateParams(t, prompt);
+        const model = t.model ? modelByCode(t.model) : routeModel(t.modality, prompt, t.strategy ?? 'auto').model;
+        return submit({ modality: t.modality, prompt, model, params: params as Task['params'], count: Number(params.count ?? 1), source: 'template' });
       },
       async uploadImage(file) {
         if (!/^image\/(png|jpeg|webp)$/.test(file.type)) {

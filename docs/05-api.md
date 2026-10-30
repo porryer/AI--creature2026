@@ -48,7 +48,7 @@
 | 429 | `RATE_LIMITED` | 请求过于频繁（验证码、上传、发布、举报的每日上限；生成任务每分钟提交次数与进行中任务数），附 `Retry-After` |
 | 503 | `MODEL_UNAVAILABLE` | 所选模型及备选模型均不可用 |
 
-### 1.3 实现状态（Sprint 1–8）
+### 1.3 实现状态（Sprint 1–9）
 
 已实现（`apps/server`，带集成测试）：
 
@@ -65,12 +65,14 @@
 | 项目与画布 | `GET /projects`、`POST /projects`（同时创建画布）、`PATCH /projects/{id}`、`DELETE /projects/{id}`、`GET /canvases/latest`、`GET /canvases/{id}`、`PUT /canvases/{id}`，见 3.8 |
 | 社区 | `GET /feed?tab=recommend\|latest\|hot\|mine&kind=&cursor=`、`POST /posts`、`GET /posts/{id}`、`DELETE /posts/{id}`（作者撤回）、`PUT` / `DELETE /posts/{id}/like`、`POST /posts/{id}/remix`、`POST /reports`，见 3.9 |
 | 角色与品牌 | `GET` / `POST /characters`、`GET` / `PATCH` / `DELETE /characters/{id}`、`GET` / `POST /brand-kits`、`GET` / `PATCH` / `DELETE /brand-kits/{id}`，生成时通过 `context` 引用，见 3.11 |
-| 管理后台 | `GET /admin/overview`、`GET /admin/models`、`GET /admin/review-queue`、`POST /admin/posts/{id}/decision`、`GET /admin/users`、`GET /admin/users/{id}`、`POST /admin/users/{id}/status`、`POST /admin/users/{id}/credits`、`GET /admin/reconcile`、`POST /admin/reconcile/run`（需 `role = admin`），见 3.10 |
+| 模板 | `GET /templates?category=&kind=`、`GET /templates/{id}`、`POST /templates/{id}/generate`、`POST /templates/{id}/use`、`PUT /templates/{id}/rating`，见 3.12 |
+| 埋点 | `POST /analytics/events`（客户端界面行为），见 3.12 |
+| 管理后台 | `GET /admin/overview`、`GET /admin/analytics?days=`、`GET /admin/models`、`GET /admin/review-queue`、`POST /admin/posts/{id}/decision`、`GET /admin/users`、`GET /admin/users/{id}`、`POST /admin/users/{id}/status`、`POST /admin/users/{id}/credits`、`GET /admin/reconcile`、`POST /admin/reconcile/run`（需 `role = admin`），见 3.10 |
 | 积分 | `GET /credits/balance`、`GET /credits/ledger` |
 | 订单 | `POST /orders`、`GET /orders/{id}`、`POST /orders/{id}/mock-pay`（仅 `PAYMENTS_MODE=mock`） |
 | 运维 | `GET /healthz`、`GET /metrics`（Prometheus 文本，令牌保护，见 [09 上线准备](./09-launch-readiness.md)） |
 
-其余接口（写作流式、画布运行与分享、Agent、模板、评论与关注流、团队、支付回调、开放 API）按 [开发计划](./07-roadmap.md) 在后续 Sprint 实现。刷新令牌通过 httpOnly Cookie `crt_rt`（路径 `/v1/auth`）下发，前端不接触。
+其余接口（写作流式、画布运行与分享、Agent、用户发布模板、评论与关注流、团队、支付回调、开放 API）按 [开发计划](./07-roadmap.md) 在后续 Sprint 实现。刷新令牌通过 httpOnly Cookie `crt_rt`（路径 `/v1/auth`）下发，前端不接触。
 
 ## 2. 接口清单
 
@@ -164,10 +166,12 @@
 
 | 方法 | 路径 | 说明 |
 |---|---|---|
-| GET | `/templates?category=&kind=&sort=` | 模板列表 |
+| GET | `/templates?category=&kind=` | 模板列表（附使用次数、评分与预估积分） |
 | GET | `/templates/{id}` | 模板详情 |
-| POST | `/templates/{id}/use` | 使用模板：单步模板直接创建任务；工作流模板创建画布 |
-| POST | `/templates` | 发布模板（进入审核） |
+| POST | `/templates/{id}/generate` | 单步模板：填写输入后创建生成任务（幂等键同 `/generations`） |
+| POST | `/templates/{id}/use` | 工作流模板：记录一次使用（画布由前端按步骤生成） |
+| PUT | `/templates/{id}/rating` | 评分 1–5，用过才能评 |
+| POST | `/templates` | 发布模板（进入审核，P1） |
 
 ### 2.10 社区
 
@@ -515,6 +519,33 @@ data: {"session_status":"awaiting_confirm"}
 | `place_logo` | 仅图像，品牌套件需有 Logo：主 Logo 作为参考图（`role: "logo"`）传给模型，提示词要求放在画面右上角（右下角留给"AI 生成"显式标识） |
 
 校验在冻结积分之前完成，非法引用返回 `400`；编辑任务不能带 `context`。任务创建时保存角色与品牌套件的快照，之后修改或删除不影响已提交的任务；任务的 `prompt` 仍是用户原始提示词，注入后的完整提示词与原始提示词一起过审。任务返回 `context: { characters: [{ id, name }], brand_kit: { id, name } | null, place_logo }`。角色 LoRA 训练（`POST /characters/{id}/train`）尚未实现。
+
+### 3.12 官方模板与数据埋点
+
+**模板目录**在 `packages/shared/src/templates.ts`（20 个单步模板、6 个工作流模板），前后端共用；数据库只保存使用与评分（`template_stats`、`template_uses`、`template_ratings`）。列表项为 `TemplateDTO`：目录字段加 `uses`、`rating: { avg, count }`、`my_rating`、`used_by_me`、`estimated_credits`（按模板默认参数与价目估算）。
+
+`POST /v1/templates/{id}/generate`（需 `Idempotency-Key`）
+
+```json
+{ "values": { "product": "山野枫糖拿铁" }, "images": { "photo": "ast_…" } }
+```
+
+- 必填项缺失 `400`（"请填写商品" / "请上传商品图"），文字超过长度上限 `400`；选填项留空时使用示例值。
+- 服务端渲染提示词后走与 `POST /generations` 相同的链路（审核、冻结积分、排队），任务 `source = "template"` 并记录 `template_id`；图片输入作为参考图（按模板定义的 `role`），配音模板按文字长度计费。普通生成接口不能自称来自模板。
+- 相同幂等键重放返回 `200` 与原任务，不重复计数；工作流模板调用此接口返回 `400`（请在画布中使用）。
+- `POST /templates/{id}/use` 只用于工作流模板；`PUT /templates/{id}/rating { "score": 1–5 }` 需要用过该模板（`403`），重复评分覆盖。
+
+**埋点**：事件写入 `analytics_events`（`source = server | client`）。服务端记录 `prompt_submit`、`task_succeeded` / `task_failed`、`asset_export`（`channel: download | publish`）、`order_paid`、`template_use`；客户端只能通过 `POST /v1/analytics/events { "events": [...] }`（`202 { accepted }`）上报白名单内的界面行为：`page_view`、`paywall_shown`、`agent_plan_shown`、`agent_plan_confirmed`、`asset_export`（`channel: copy | share`），属性严格校验，每次最多 20 条，每人每分钟 300 条（`429 RATE_LIMITED`）。前端攒批发送，失败直接丢弃。
+
+**数据看板** `GET /v1/admin/analytics?days=7`（1–90）：
+
+| 字段 | 说明 |
+|---|---|
+| `funnel` | 活跃 → 提交 → 生成成功 → 二次操作（成功后再次提交）→ 导出（下载、复制、分享或发布），去重用户数 |
+| `north_star` | 最近 8 周每周被导出的不同作品数（周一起算，北京时间） |
+| `events` | 各事件次数（按来源） |
+| `templates` | 热门模板的使用次数与人数 |
+| `paywall` | 看到付费墙的用户数、其中付费的用户数、订单数与金额 |
 
 ## 4. 开放 API（P2）
 

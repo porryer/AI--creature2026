@@ -1,5 +1,6 @@
 import { Inject, Injectable } from '@nestjs/common';
 import type { AssetDTO, DownloadDTO, Modality, OutputDTO } from '@creature/shared';
+import { AnalyticsService } from '../analytics/analytics.service';
 import { Errors } from '../common/errors';
 import { Db, DB } from '../db/db';
 import { extFor, StorageService } from '../storage/storage.service';
@@ -31,6 +32,7 @@ export class AssetsService {
   constructor(
     @Inject(DB) private readonly db: Db,
     private readonly storage: StorageService,
+    private readonly analytics: AnalyticsService,
   ) {}
 
   toDTO(r: AssetRow): AssetDTO {
@@ -121,6 +123,7 @@ export class AssetsService {
     const r = await this.row(userId, id);
     const base = r.title.replace(/[\\/:*?"<>|\u0000-\u001f]+/g, ' ').trim().slice(0, 60) || r.content_id;
     const filename = `${base}.${extFor(r.mime_type)}`;
+    await this.analytics.track(userId, 'asset_export', { channel: 'download', asset_id: r.id, asset_type: r.kind, source: r.source, format: extFor(r.mime_type) });
     return { url: this.storage.signedDownloadUrl(r.storage_key, filename), filename };
   }
 

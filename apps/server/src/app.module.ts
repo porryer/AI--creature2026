@@ -3,6 +3,7 @@ import { NestFactory } from '@nestjs/core';
 import type { NestExpressApplication } from '@nestjs/platform-express';
 import cookieParser from 'cookie-parser';
 import { AdminModule } from './admin/admin.module';
+import { AnalyticsModule } from './analytics/analytics.module';
 import { AssetsModule } from './assets/assets.module';
 import { AuthModule } from './auth/auth.module';
 import { BillingModule } from './billing/billing.module';
@@ -20,6 +21,7 @@ import { JobsService } from './jobs.service';
 import { LibraryModule } from './library/library.module';
 import { MetricsService } from './observability/metrics.service';
 import { httpObservability, ObservabilityModule } from './observability/observability.module';
+import { TemplatesModule } from './templates/templates.module';
 import { UsersModule } from './users/users.module';
 
 @Controller('healthz')
@@ -42,7 +44,7 @@ export class AppModule {
   static forRoot(config: AppConfig): DynamicModule {
     return {
       module: AppModule,
-      imports: [CoreModule.forRoot(config), AuthModule, CreditsModule, UsersModule, GatewayModule, AssetsModule, GenerationsModule, BillingModule, CanvasesModule, CommunityModule, AdminModule, LibraryModule, ObservabilityModule],
+      imports: [CoreModule.forRoot(config), AuthModule, CreditsModule, UsersModule, GatewayModule, AssetsModule, GenerationsModule, BillingModule, CanvasesModule, CommunityModule, AdminModule, LibraryModule, TemplatesModule, AnalyticsModule, ObservabilityModule],
       controllers: [HealthController],
       providers: [JobsService],
     };

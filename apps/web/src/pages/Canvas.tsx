@@ -3,8 +3,8 @@ import { useCallback, useEffect, useMemo, useRef, useState, type PointerEvent as
 import { Art } from '../components/Art';
 import { Status } from '../components/ui';
 import { api, ApiError, BACKEND } from '../lib/api';
-import { TEMPLATES } from '../lib/mock';
-import { estimateCredits, modelByCode, routeModel, type CanvasDocDTO, type CanvasDTO, type CanvasNodeDTO } from '@creature/shared';
+import { estimateCredits, findTemplate, modelByCode, routeModel, type CanvasDocDTO, type CanvasDTO, type CanvasNodeDTO } from '@creature/shared';
+import { track } from '../lib/analytics';
 import { errorText, outputFromDTO, uid, useStore } from '../lib/store';
 import type { Modality, Output, Task, TaskStatus } from '../lib/types';
 
@@ -52,6 +52,8 @@ interface Plan {
   steps: PlanStep[];
   state: 'proposed' | 'running' | 'done' | 'canceled';
   confirmArmed?: boolean;
+  /** 小造最初给出的步骤数（用于统计用户删掉了几步） */
+  planned?: number;
 }
 
 interface Msg {
@@ -187,7 +189,7 @@ function planFrom(text: string): Plan {
     const params = { ratio: '3:4', resolution: '2k', count: 4 };
     steps.push({ id: 's2', kind: 'image', title: '主视觉 ×4 · 3:4 · 2K', prompt, modelCode: m.code, params, count: 4, credits: estimateCredits(m, params), dependsOn: ['s1'] });
   }
-  return { id: uid('pl'), title: subject || '新的创作计划', steps, state: 'proposed' };
+  return { id: uid('pl'), title: subject || '新的创作计划', steps, state: 'proposed', planned: steps.length };
 }
 
 /** 预估节点渲染高度，用于自动排布时避免重叠 */
@@ -202,8 +204,8 @@ function nodeHeight(kind: Modality, count: number, ratio: string): number {
 }
 
 function templateNodes(templateId: string): { nodes: CNode[]; edges: CEdge[]; title: string } | null {
-  const t = TEMPLATES.find((x) => x.id === templateId);
-  if (!t) return null;
+  const t = findTemplate(templateId);
+  if (!t || t.kind !== 'workflow') return null;
   const nodes: CNode[] = [];
   const cols: string[][] = [];
   let col = -1;
@@ -453,10 +455,13 @@ export function Canvas() {
       window.setTimeout(() => {
         const plan = planFrom(value);
         const total = plan.steps.reduce((a, s) => a + s.credits, 0);
+        track({ name: 'agent_plan_shown', props: { step_count: plan.steps.length, estimated_credits: total } });
+        // 接入后端时规划仍是前端规则，不声称读取了品牌套件
+        const read = BACKEND === 'api' ? '' : '我读取了品牌套件「山野咖啡」和画布上已有的节点，';
         setMsgs((ms) =>
           ms.map((m) =>
             m.id === typingId
-              ? { id: typingId, role: 'assistant', text: `收到。我读取了品牌套件「山野咖啡」和画布上已有的节点，拆成 ${plan.steps.length} 个步骤，预计 ${total} 积分。你可以删掉不需要的步骤，确认后我再开始生成：`, plan }
+              ? { id: typingId, role: 'assistant', text: `收到。${read}拆成 ${plan.steps.length} 个步骤，预计 ${total} 积分。你可以删掉不需要的步骤，确认后我再开始生成：`, plan }
               : m,
           ),
         );
@@ -515,6 +520,7 @@ export function Canvas() {
       setMsgs((ms) => ms.map((m) => (m.plan?.id === plan.id ? { ...m, plan: { ...m.plan, confirmArmed: true } } : m)));
       return;
     }
+    track({ name: 'agent_plan_confirmed', props: { step_count: plan.steps.length, estimated_credits: total, edited_steps: Math.max(0, (plan.planned ?? plan.steps.length) - plan.steps.length) } });
     const baseX = nodesRef.current.length ? Math.max(...nodesRef.current.map((n) => n.x)) + 340 : 40;
     const col: Record<Modality, number> = { text: 0, image: 1, audio: 1, video: 2 };
     const colY: Record<number, number> = {};

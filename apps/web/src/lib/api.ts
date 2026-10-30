@@ -1,5 +1,7 @@
 import type {
+  AdminAnalyticsDTO,
   BrandKitDTO,
+  ClientEvent,
   CharacterDTO,
   GenerationContextInput,
   AdminModelDTO,
@@ -30,6 +32,7 @@ import type {
   RoutingStrategy,
   ServerEvent,
   TaskDTO,
+  TemplateDTO,
   UploadTicketDTO,
   UserStatus,
 } from '@creature/shared';
@@ -199,6 +202,14 @@ export const api = {
   setLike: (id: string, on: boolean) => call<{ liked: boolean; like_count: number }>(on ? 'PUT' : 'DELETE', `/posts/${id}/like`),
   remix: (id: string) => call<RemixDTO>('POST', `/posts/${id}/remix`, {}),
   report: (postId: string, reason: ReportReason, detail?: string) => call<{ id: string }>('POST', '/reports', { target_type: 'post', target_id: postId, reason, detail }),
+
+  templates: () => call<{ data: TemplateDTO[] }>('GET', '/templates'),
+  generateFromTemplate: (id: string, body: { values: Record<string, string>; images: Record<string, string> }, idempotencyKey: string) =>
+    call<TaskDTO>('POST', `/templates/${id}/generate`, body, { 'idempotency-key': idempotencyKey }),
+  useTemplate: (id: string) => call<TemplateDTO>('POST', `/templates/${id}/use`, {}),
+  rateTemplate: (id: string, score: number) => call<TemplateDTO>('PUT', `/templates/${id}/rating`, { score }),
+  trackEvents: (events: ClientEvent[]) => call<{ accepted: number }>('POST', '/analytics/events', { events }),
+  adminAnalytics: (days: number) => call<AdminAnalyticsDTO>('GET', `/admin/analytics${qs({ days })}`),
 
   characters: () => call<{ data: CharacterDTO[]; quota: Quota }>('GET', '/characters'),
   createCharacter: (body: CharacterBody) => call<CharacterDTO>('POST', '/characters', body),

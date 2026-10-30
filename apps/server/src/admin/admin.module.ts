@@ -1,5 +1,6 @@
 import { Body, CanActivate, Controller, ExecutionContext, Get, HttpCode, Inject, Injectable, Module, Param, Post, Query, UseGuards } from '@nestjs/common';
 import { z } from 'zod';
+import { AnalyticsService } from '../analytics/analytics.service';
 import { AuthGuard } from '../auth/auth.guard';
 import { Errors } from '../common/errors';
 import { pageParams, parse, UserId, type AuthedRequest } from '../common/http';
@@ -28,6 +29,7 @@ export class AdminGuard implements CanActivate {
 }
 
 const DecisionBody = z.object({ action: z.enum(['approve', 'remove']), note: z.string().trim().max(200).optional() }).strict();
+const AnalyticsQuery = z.object({ days: z.coerce.number().int().min(1).max(90).default(7) });
 const UserQuery = z.object({ q: z.string().max(64).optional(), status: z.enum(['active', 'frozen', 'banned']).optional() });
 const Reason = z.string().trim().min(2, '请填写原因').max(200);
 const StatusBody = z.object({ status: z.enum(['active', 'frozen', 'banned']), reason: Reason }).strict();
@@ -46,8 +48,15 @@ export class AdminController {
     private readonly admin: AdminService,
     private readonly users: AdminUsersService,
     private readonly reconcile: ReconcileService,
+    private readonly analyticsReport: AnalyticsService,
     @Inject(DB) private readonly db: Db,
   ) {}
+
+  /** 数据看板：漏斗、北极星、事件计数、热门模板、付费转化 */
+  @Get('analytics')
+  analytics(@Query() query: Record<string, unknown>) {
+    return this.analyticsReport.report(parse(AnalyticsQuery, query).days);
+  }
 
   @Get('reconcile')
   async reconcileRuns() {

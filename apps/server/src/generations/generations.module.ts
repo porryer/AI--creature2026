@@ -65,6 +65,6 @@ export class EventsController {
   imports: [CreditsModule, GatewayModule, AssetsModule, SafetyModule, LibraryModule],
   controllers: [GenerationsController, EventsController],
   providers: [GenerationsService, GenerationWorker],
-  exports: [GenerationWorker],
+  exports: [GenerationWorker, GenerationsService],
 })
 export class GenerationsModule {}

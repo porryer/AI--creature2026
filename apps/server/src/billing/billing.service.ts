@@ -1,6 +1,7 @@
 import { Inject, Injectable } from '@nestjs/common';
 import { GRANT_RULES, orderAmountFen, PLANS, type OrderDTO, type PlanCode } from '@creature/shared';
 import { randomInt } from 'node:crypto';
+import { AnalyticsService } from '../analytics/analytics.service';
 import { AppConfig, CONFIG } from '../config';
 import { AppError, Errors } from '../common/errors';
 import { newId } from '../common/ids';
@@ -56,6 +57,7 @@ export class BillingService {
     @Inject(CONFIG) private readonly config: AppConfig,
     @Inject(DB) private readonly db: Db,
     private readonly credits: CreditsService,
+    private readonly analytics: AnalyticsService,
   ) {}
 
   async createOrder(userId: string, itemType: 'subscription' | 'credit_pack', itemRef: string, cycle: 'month' | 'year' | null): Promise<OrderDTO> {
@@ -81,6 +83,7 @@ export class BillingService {
   /** 模拟支付成功（仅开发 / 测试环境），重复调用幂等 */
   async mockPay(userId: string, id: string): Promise<OrderDTO> {
     if (this.config.paymentsMode !== 'mock') throw Errors.forbidden('模拟支付仅在开发环境可用');
+    let newlyPaid = false;
     const order = await this.db.tx(async (q) => {
       const [o] = await q.query<OrderRow>('SELECT * FROM orders WHERE id = $1 AND user_id = $2 FOR UPDATE', [id, userId]);
       if (!o) throw Errors.notFound('订单');
@@ -88,9 +91,11 @@ export class BillingService {
       if (o.status !== 'pending') throw Errors.conflict('ORDER_CLOSED', '订单已关闭');
       const [paid] = await q.query<OrderRow>(`UPDATE orders SET status = 'paid', paid_at = now() WHERE id = $1 RETURNING *`, [id]);
       await this.fulfill(q, paid);
+      newlyPaid = true;
       return paid;
     });
     await this.credits.notify(await this.credits.accountIdFor(userId));
+    if (newlyPaid) await this.analytics.track(userId, 'order_paid', { order_id: order.id, item_type: order.item_type, item_ref: order.item_ref, cycle: order.cycle, amount_fen: order.amount_fen });
     return toDTO(order);
   }
 

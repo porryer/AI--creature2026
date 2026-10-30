@@ -1,5 +1,5 @@
 // 原型示例数据。所有用户、作品、数值均为演示用途。
-import type { Asset, LedgerEntry, Post, Template } from './types';
+import type { Asset, LedgerEntry, Post } from './types';
 
 const H = 3600_000;
 const D = 24 * H;
@@ -24,20 +24,21 @@ export const POSTS: Post[] = [
   { id: 'p16', title: '山野露营海报', prompt: '山野露营节海报，标题文字“山野计划”，绿色系，扁平插画', author: '一叶', kind: 'image', ratio: '3:4', likes: 990, remix: 451, model: 'Seedream 4.0', tags: ['海报', '设计'] },
 ];
 
-export const TEMPLATES: Template[] = [
-  { id: 't1', title: '小红书封面 3 连图', desc: '输入主题，自动生成标题文案与 3 张风格统一的竖版封面', category: '自媒体', kind: 'workflow', cover: '秋日 小红书 封面 咖啡', ratio: '3:4', uses: 48210, rating: 4.8, author: '造物官方', official: true, prompt: '秋季咖啡探店', modality: 'image', steps: [ { kind: 'text', title: '生成标题与卖点文案', credits: 1 }, { kind: 'image', title: '主封面 · 3:4', credits: 6 }, { kind: 'image', title: '副图 ×2 · 统一风格', credits: 12 } ] },
-  { id: 't2', title: '商品白底图换场景', desc: '上传白底商品图，一键生成 4 张生活化场景图，保持商品外观不变', category: '电商', kind: 'single', cover: '产品 白底 耳机 极简', ratio: '1:1', uses: 36702, rating: 4.7, author: '造物官方', official: true, prompt: '将商品放在温暖的木质桌面上，旁边有绿植和咖啡，自然窗光', modality: 'image', steps: [ { kind: 'image', title: '场景生成 ×4', credits: 24 } ] },
-  { id: 't3', title: '15 秒产品广告片', desc: '脚本 → 关键帧 → 3 个镜头视频 → 配音，一条龙生成竖版广告', category: '广告', kind: 'workflow', cover: '柠檬 饮料 活力 广告', ratio: '9:16', uses: 12880, rating: 4.6, author: '造物官方', official: true, prompt: '柠檬气泡水夏日广告', modality: 'video', steps: [ { kind: 'text', title: '15 秒分镜脚本', credits: 1 }, { kind: 'image', title: '关键帧 ×3', credits: 18 }, { kind: 'video', title: '镜头视频 ×3 · 5 秒', credits: 240 }, { kind: 'audio', title: '旁白配音', credits: 1 } ] },
-  { id: 't4', title: '漫剧单集分镜', desc: '粘贴剧本，自动拆出角色、场景与 12 个分镜，并批量生成镜头画面', category: '漫剧', kind: 'workflow', cover: '动漫 樱花 少女 漫剧', ratio: '16:9', uses: 9420, rating: 4.7, author: '阿杰工作室', prompt: '第 4 集：雨夜重逢', modality: 'image', steps: [ { kind: 'text', title: '剧本拆分镜表', credits: 1 }, { kind: 'image', title: '分镜画面 ×12', credits: 72 }, { kind: 'audio', title: '角色配音', credits: 3 } ] },
-  { id: 't5', title: '国风头像', desc: '上传自拍，生成水墨国风头像，保留五官特征', category: '头像', kind: 'single', cover: '水墨 国风 人像', ratio: '1:1', uses: 65230, rating: 4.9, author: '砚山', prompt: '水墨国风人物头像，古装，留白背景，朱砂点缀', modality: 'image', steps: [ { kind: 'image', title: '头像 ×4', credits: 24 } ] },
-  { id: 't6', title: '节日营销海报', desc: '输入品牌与节日，生成带中文标题的竖版海报，自动套用品牌套件', category: '设计', kind: 'single', cover: '海报 节日 橙 活力', ratio: '3:4', uses: 22140, rating: 4.6, author: '造物官方', official: true, prompt: '双十一大促海报，标题文字“山野咖啡 · 全场 8 折”，暖橙色', modality: 'image', steps: [ { kind: 'image', title: '海报 ×4 · 2K', credits: 24 } ] },
-  { id: 't7', title: '探店 Vlog 脚本 + 配图', desc: '输入店名与特色，生成口播脚本、6 张配图和片头音乐', category: '自媒体', kind: 'workflow', cover: '面包 清晨 暖 探店', ratio: '9:16', uses: 8730, rating: 4.5, author: '林夏', prompt: '城南新开的法式面包店', modality: 'text', steps: [ { kind: 'text', title: '口播脚本', credits: 1 }, { kind: 'image', title: '配图 ×6', credits: 36 }, { kind: 'audio', title: '片头音乐', credits: 15 } ] },
-  { id: 't8', title: '品牌 Logo 动效', desc: '上传 Logo，生成 5 秒开场动效视频', category: '广告', kind: 'single', cover: '极简 科技 产品', ratio: '16:9', uses: 5210, rating: 4.4, author: '造物官方', official: true, prompt: 'Logo 从粒子中汇聚成形，深色背景，光效扫过', modality: 'video', steps: [ { kind: 'video', title: '动效 · 5 秒 1080p', credits: 80 } ] },
-  { id: 't9', title: '儿童绘本 8 页', desc: '一句话故事梗概 → 8 页绘本文字与插画，角色全程一致', category: '漫剧', kind: 'workflow', cover: '奇幻 星空 鲸 绘本', ratio: '4:3', uses: 6840, rating: 4.8, author: '糖霜', prompt: '小鲸鱼寻找星星的故事', modality: 'image', steps: [ { kind: 'text', title: '故事文本 · 8 页', credits: 1 }, { kind: 'image', title: '角色设定', credits: 6 }, { kind: 'image', title: '插画 ×8', credits: 48 } ] },
-  { id: 't10', title: '播客封面 + 片头', desc: '生成播客封面与 15 秒片头音乐', category: '音频', kind: 'workflow', cover: '海 蓝 宁静 播客', ratio: '1:1', uses: 3120, rating: 4.5, author: '潮汐', prompt: '一档聊城市漫游的播客', modality: 'audio', steps: [ { kind: 'image', title: '封面 1:1', credits: 6 }, { kind: 'audio', title: '片头音乐', credits: 15 } ] },
-];
-
-export const TEMPLATE_CATEGORIES = ['全部', '自媒体', '电商', '广告', '漫剧', '设计', '头像', '音频'];
+/** 离线演示用的模板使用次数与评分（模板目录见 packages/shared/src/templates.ts；接入后端时为真实统计） */
+export const MOCK_TEMPLATE_STATS: Record<string, { uses: number; rating: number }> = {
+  t1: { uses: 48210, rating: 4.8 },
+  'scene-swap': { uses: 36702, rating: 4.7 },
+  t3: { uses: 12880, rating: 4.6 },
+  t4: { uses: 9420, rating: 4.7 },
+  'ink-avatar': { uses: 65230, rating: 4.9 },
+  'festival-poster': { uses: 22140, rating: 4.6 },
+  t7: { uses: 8730, rating: 4.5 },
+  'logo-reveal': { uses: 5210, rating: 4.4 },
+  t9: { uses: 6840, rating: 4.8 },
+  t10: { uses: 3120, rating: 4.5 },
+  'xhs-cover': { uses: 30410, rating: 4.7 },
+  'xhs-note': { uses: 27650, rating: 4.6 },
+};
 
 export const PROJECTS = [
   { id: 'pr1', name: '山野咖啡 · 秋季上新', updated: NOW - 2 * H, members: ['周', '林', '阿'], items: 38, covers: ['秋日 咖啡 拿铁 枫', '秋 面包 暖', '秋 落日 咖啡'] },

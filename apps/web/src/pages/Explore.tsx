@@ -4,7 +4,8 @@ import { useCallback, useEffect, useState } from 'react';
 import { Art } from '../components/Art';
 import { Modal } from '../components/ui';
 import { api, BACKEND } from '../lib/api';
-import { fmt, POSTS, TEMPLATES } from '../lib/mock';
+import { fmt, POSTS } from '../lib/mock';
+import { useTemplates } from '../lib/templates';
 import { navigate } from '../lib/router';
 import { errorText, simplifyRatio, useStore } from '../lib/store';
 import type { Modality, Post } from '../lib/types';
@@ -29,6 +30,8 @@ const SUGGESTS: Record<Mode, string[]> = {
 
 export function Explore() {
   const { setHandoff } = useStore();
+  // 热门模板：按使用次数，新部署时按目录顺序
+  const popular = [...useTemplates().templates].sort((a, b) => b.uses - a.uses).slice(0, 6);
   const [mode, setMode] = useState<Mode>('agent');
   const [prompt, setPrompt] = useState('');
   const current = MODES.find((m) => m.value === mode)!;
@@ -106,26 +109,26 @@ export function Explore() {
           </button>
         </div>
         <div className="rail-scroll">
-          {TEMPLATES.slice(0, 6).map((t) => (
+          {popular.map((t) => (
             <button
               key={t.id}
               className="tpl-card"
               onClick={() => {
-                setHandoff(t.kind === 'workflow' ? { to: 'canvas', templateId: t.id } : { to: 'studio', prompt: t.prompt, mode: t.modality });
-                navigate(t.kind === 'workflow' ? 'canvas' : 'studio', t.kind === 'workflow' ? undefined : t.modality);
+                setHandoff({ to: 'templates', templateId: t.id });
+                navigate('templates');
               }}
             >
               <Art prompt={t.cover} ratio="16:10" badge={false} long={480} />
               <div className="tpl-card-body">
                 <div style={{ display: 'flex', gap: 6 }}>
                   <span className={`tag ${t.kind === 'workflow' ? 'video' : 'image'}`}>{t.kind === 'workflow' ? `工作流 · ${t.steps.length} 步` : '单步'}</span>
-                  {t.official && <span className="tag">官方</span>}
+                  <span className="tag">官方</span>
                 </div>
                 <h4>{t.title}</h4>
                 <p>{t.desc}</p>
                 <div className="tpl-meta">
-                  <span className="mono">约 {t.steps.reduce((a, s) => a + s.credits, 0)} 积分</span>
-                  <span>{fmt(t.uses)} 次使用</span>
+                  <span className="mono">约 {t.estimated_credits} 积分</span>
+                  <span>{t.uses ? `${fmt(t.uses)} 次使用` : '新上架'}</span>
                 </div>
               </div>
             </button>

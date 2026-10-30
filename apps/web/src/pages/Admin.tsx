@@ -6,6 +6,7 @@ import { Segmented, Switch } from '../components/ui';
 import { api, BACKEND } from '../lib/api';
 import { ADMIN, fmt, timeAgo } from '../lib/mock';
 import { errorText, simplifyRatio, useStore } from '../lib/store';
+import { AdminAnalytics } from './AdminAnalytics';
 import { AdminUsers } from './AdminUsers';
 
 export function Admin() {
@@ -28,7 +29,7 @@ function LiveAdmin() {
   const [models, setModels] = useState<AdminModelDTO[]>([]);
   const [queue, setQueue] = useState<ReviewItemDTO[] | null>(null);
   const [busy, setBusy] = useState<string | null>(null);
-  const [tab, setTab] = useState<'overview' | 'users'>('overview');
+  const [tab, setTab] = useState<'overview' | 'analytics' | 'users'>('overview');
   const isAdmin = state.profile?.role === 'admin';
 
   const load = useCallback(async () => {
@@ -85,8 +86,8 @@ function LiveAdmin() {
     <div className="page" style={{ display: 'flex', flexDirection: 'column', gap: 20 }}>
       <div className="page-head" style={{ marginBottom: 0 }}>
         <div>
-          <h2>{tab === 'overview' ? '运营概览' : '用户管理'}</h2>
-          <p>{tab === 'overview' ? '数据按北京时间统计；模型健康度来自网关 5 分钟窗口与近 24 小时任务。' : '冻结或封禁会立即让该用户退出登录；积分调整与状态变更都会写入审计日志。'}</p>
+          <h2>{tab === 'overview' ? '运营概览' : tab === 'analytics' ? '数据看板' : '用户管理'}</h2>
+          <p>{tab === 'overview' ? '数据按北京时间统计；模型健康度来自网关 5 分钟窗口与近 24 小时任务。' : tab === 'analytics' ? '漏斗与事件来自埋点：提交、成功、下载、发布、支付由服务端记录，页面浏览与付费墙由客户端上报。' : '冻结或封禁会立即让该用户退出登录；积分调整与状态变更都会写入审计日志。'}</p>
         </div>
         <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
           <Segmented
@@ -95,6 +96,7 @@ function LiveAdmin() {
             onChange={setTab}
             options={[
               { value: 'overview', label: '概览与审核' },
+              { value: 'analytics', label: '数据' },
               { value: 'users', label: '用户' },
             ]}
           />
@@ -107,6 +109,8 @@ function LiveAdmin() {
       </div>
       {tab === 'users' ? (
         <AdminUsers />
+      ) : tab === 'analytics' ? (
+        <AdminAnalytics />
       ) : (
         <>
           <div className="kpis">
